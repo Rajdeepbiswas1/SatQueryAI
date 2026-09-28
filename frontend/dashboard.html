@@ -1,0 +1,1573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="description"
+        content="SatQueryAI — ask natural-language questions about satellite imagery."
+    >
+
+    <title>SatQueryAI — Earth Observation Intelligence</title>
+
+    <script src="auth-guard.js"></script>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="app-shell">
+
+    <!-- =====================================================
+         TOP BAR
+    ====================================================== -->
+
+    <header class="topbar">
+
+        <div class="brand">
+
+            <div class="brand-mark" aria-hidden="true">
+                <svg
+                    viewBox="0 0 48 48"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                >
+                    <circle
+                        cx="24"
+                        cy="24"
+                        r="17"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                    />
+
+                    <ellipse
+                        cx="24"
+                        cy="24"
+                        rx="22"
+                        ry="8"
+                        transform="rotate(-24 24 24)"
+                        stroke="currentColor"
+                        stroke-width="1.2"
+                        opacity="0.65"
+                    />
+
+                    <circle
+                        cx="24"
+                        cy="24"
+                        r="4"
+                        fill="currentColor"
+                    />
+
+                    <circle
+                        cx="39"
+                        cy="15"
+                        r="2"
+                        fill="currentColor"
+                    />
+                </svg>
+            </div>
+
+            <div class="brand-copy">
+
+                <div class="brand-name">
+                    SatQuery<span>AI</span>
+                </div>
+
+                <div class="brand-subtitle">
+                    Earth Observation Intelligence
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <div class="topbar-actions">
+
+            <div
+                id="api-status"
+                class="status-badge"
+            >
+                API: checking...
+            </div>
+
+            <button
+                id="theme-toggle"
+                class="icon-button theme-toggle"
+                type="button"
+                title="Switch theme"
+                aria-label="Switch theme"
+            >
+                <svg
+                    id="theme-icon-sun"
+                    class="theme-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                >
+                    <circle
+                        cx="12"
+                        cy="12"
+                        r="4"
+                    />
+                    <path d="M12 2v2" />
+                    <path d="M12 20v2" />
+                    <path d="m4.93 4.93 1.42 1.42" />
+                    <path d="m17.66 17.66 1.41 1.41" />
+                    <path d="M2 12h2" />
+                    <path d="M20 12h2" />
+                    <path d="m6.34 17.66-1.41 1.41" />
+                    <path d="m19.07 4.93-1.41 1.41" />
+                </svg>
+
+                <svg
+                    id="theme-icon-moon"
+                    class="theme-icon hidden"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                >
+                    <path
+                        d="M20.2 14.4A8.5 8.5 0 0 1 9.6 3.8a8.5 8.5 0 1 0 10.6 10.6Z"
+                    />
+                </svg>
+            </button>
+
+        </div>
+
+    </header>
+
+
+    <!-- =====================================================
+         MAIN
+    ====================================================== -->
+
+    <main class="workspace">
+
+
+        <!-- =================================================
+             HERO
+        ================================================== -->
+
+        <section class="hero-section">
+
+            <div class="eyebrow">
+                <span class="eyebrow-dot"></span>
+                INTELLIGENT SATELLITE ANALYSIS
+            </div>
+
+            <h1>
+                Ask questions about the Earth.
+            </h1>
+
+            <p class="hero-description">
+                Add satellite imagery, ask a question in plain language,
+                and let SatQueryAI find the relevant evidence.
+            </p>
+
+
+            <!-- Query composer -->
+
+            <div class="query-composer">
+
+                <div class="query-icon">
+
+                    <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                    >
+                        <circle
+                            cx="11"
+                            cy="11"
+                            r="7"
+                        />
+                        <path d="m20 20-4-4" />
+                    </svg>
+
+                </div>
+
+                <textarea
+                    id="query"
+                    rows="1"
+                    placeholder="What would you like to know about this area?"
+                    aria-label="Ask SatQueryAI a question"
+                ></textarea>
+
+                <div class="query-hint">
+                    Natural language
+                </div>
+
+            </div>
+
+
+            <!-- Quick prompts -->
+
+            <div class="suggestion-row">
+
+                <span class="suggestion-label">
+                    Try asking
+                </span>
+
+                <button
+                    type="button"
+                    class="suggestion-chip"
+                    data-query="Where is the largest urban area in the image?"
+                >
+                    Find urban areas
+                </button>
+
+                <button
+                    type="button"
+                    class="suggestion-chip"
+                    data-query="Describe the land cover in this image."
+                >
+                    Describe this scene
+                </button>
+
+                <button
+                    type="button"
+                    class="suggestion-chip"
+                    data-query="What changed between these two images?"
+                >
+                    What changed?
+                </button>
+
+                <button
+                    type="button"
+                    class="suggestion-chip"
+                    data-query="Are there buildings in this area?"
+                >
+                    Find buildings
+                </button>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             INPUT MODE
+        ================================================== -->
+
+        <section class="mode-section">
+
+            <div class="mode-heading">
+
+                <div>
+                    <div class="panel-kicker">
+                        ANALYSIS
+                    </div>
+
+                    <h2>
+                        What are you working with?
+                    </h2>
+                </div>
+
+                <span class="mode-help">
+                    SatQueryAI will handle the technical details.
+                </span>
+
+            </div>
+
+
+            <div class="mode-selector">
+
+                <button
+                    id="mode-single"
+                    class="mode-option active"
+                    type="button"
+                    data-mode="single"
+                >
+
+                    <span class="mode-icon">
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                        >
+                            <rect
+                                x="4"
+                                y="4"
+                                width="16"
+                                height="16"
+                                rx="3"
+                            />
+
+                            <circle
+                                cx="9"
+                                cy="9"
+                                r="1.5"
+                            />
+
+                            <path
+                                d="m5 18 5-6 3.5 3 2.5-3 3 4"
+                            />
+                        </svg>
+                    </span>
+
+                    <span>
+                        <strong>One image</strong>
+                        <small>Ask about a single scene</small>
+                    </span>
+
+                </button>
+
+
+                <button
+                    id="mode-compare"
+                    class="mode-option"
+                    type="button"
+                    data-mode="compare"
+                >
+
+                    <span class="mode-icon">
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                        >
+                            <rect
+                                x="3"
+                                y="5"
+                                width="8"
+                                height="14"
+                                rx="2"
+                            />
+
+                            <rect
+                                x="13"
+                                y="5"
+                                width="8"
+                                height="14"
+                                rx="2"
+                            />
+
+                            <path d="M11 12h2" />
+                        </svg>
+                    </span>
+
+                    <span>
+                        <strong>Two images</strong>
+                        <small>Compare related observations</small>
+                    </span>
+
+                </button>
+
+            </div>
+
+
+            <!-- Compare type -->
+
+            <div
+                id="compare-type"
+                class="compare-type hidden"
+            >
+
+                <span class="compare-label">
+                    What are the two images showing?
+                </span>
+
+                <div class="compare-options">
+
+                    <button
+                        id="pair-temporal"
+                        class="compare-option active"
+                        type="button"
+                        data-pair="temporal"
+                    >
+                        <strong>Before &amp; after</strong>
+                        <small>Same area, different dates</small>
+                    </button>
+
+                    <button
+                        id="pair-optical-sar"
+                        class="compare-option"
+                        type="button"
+                        data-pair="optical-sar"
+                    >
+                        <strong>Two sensor views</strong>
+                        <small>Optical and radar imagery</small>
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             THREE PANEL WORKSPACE
+        ================================================== -->
+
+        <section class="workspace-grid">
+
+
+            <!-- =============================================
+                 LEFT — IMAGERY
+            ============================================== -->
+
+            <div class="panel imagery-panel">
+
+                <div class="panel-header">
+
+                    <div>
+                        <div class="panel-kicker">
+                            INPUT
+                        </div>
+
+                        <h2>
+                            Your imagery
+                        </h2>
+                    </div>
+
+                    <div
+                        id="imagery-ready"
+                        class="panel-status"
+                    >
+                        WAITING
+                    </div>
+
+                </div>
+
+
+                <div class="panel-content">
+
+                    <p
+                        id="imagery-description"
+                        class="panel-description"
+                    >
+                        Add the satellite image you want
+                        SatQueryAI to analyse.
+                    </p>
+
+
+                    <!-- =====================================
+                         SINGLE IMAGE
+                    ====================================== -->
+
+                    <div
+                        id="single-upload-area"
+                        class="upload-layout"
+                    >
+
+                        <label
+                            id="upload-zone-1"
+                            class="upload-zone"
+                            for="file-input-1"
+                        >
+
+                            <div class="upload-illustration">
+
+                                <svg
+                                    viewBox="0 0 64 64"
+                                    fill="none"
+                                    stroke="currentColor"
+                                >
+
+                                    <rect
+                                        x="8"
+                                        y="12"
+                                        width="48"
+                                        height="40"
+                                        rx="6"
+                                        stroke-width="1.5"
+                                    />
+
+                                    <circle
+                                        cx="23"
+                                        cy="27"
+                                        r="4"
+                                        stroke-width="1.5"
+                                    />
+
+                                    <path
+                                        d="m12 46 13-13 8 8 7-9 12 14"
+                                        stroke-width="1.5"
+                                    />
+
+                                </svg>
+
+                            </div>
+
+                            <div class="upload-title">
+                                Add an image
+                            </div>
+
+                            <div class="upload-subtitle">
+                                Drop it here or browse your computer
+                            </div>
+
+                            <span class="upload-button">
+                                Browse imagery
+                            </span>
+
+                            <div class="upload-formats">
+                                GeoTIFF · TIFF
+                            </div>
+
+                        </label>
+
+                        <input
+                            id="file-input-1"
+                            type="file"
+                            accept=".tif,.tiff,.png,.jpg,.jpeg"
+                        >
+
+
+                        <!-- Single preview -->
+
+                        <div
+                            id="image-preview-1"
+                            class="image-preview hidden"
+                        >
+
+                            <div class="preview-image-wrap">
+                                <img
+                                    id="preview-img-1"
+                                    alt="Selected satellite imagery"
+                                >
+
+                                <button
+                                    id="remove-image-1"
+                                    type="button"
+                                    class="remove-image"
+                                    title="Remove image"
+                                >
+                                    ×
+                                </button>
+                            </div>
+
+                            <div class="preview-info">
+
+                                <div class="preview-ready">
+                                    <span></span>
+                                    Image ready
+                                </div>
+
+                                <div
+                                    id="preview-name-1"
+                                    class="preview-name"
+                                >
+                                    —
+                                </div>
+
+                                <button
+                                    id="replace-image-1"
+                                    type="button"
+                                    class="replace-button"
+                                >
+                                    Replace
+                                </button>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- =====================================
+                         TWO IMAGE
+                    ====================================== -->
+
+                    <div
+                        id="compare-upload-area"
+                        class="compare-upload hidden"
+                    >
+
+                        <!-- FIRST IMAGE -->
+
+                        <div class="image-slot">
+
+                            <div class="slot-label">
+                                <span id="slot-1-label">
+                                    FIRST IMAGE
+                                </span>
+                            </div>
+
+                            <label
+                                id="upload-zone-compare-1"
+                                class="upload-zone compact"
+                                for="file-input-compare-1"
+                            >
+
+                                <div class="upload-illustration small">
+                                    <svg
+                                        viewBox="0 0 64 64"
+                                        fill="none"
+                                        stroke="currentColor"
+                                    >
+                                        <rect
+                                            x="8"
+                                            y="12"
+                                            width="48"
+                                            height="40"
+                                            rx="6"
+                                            stroke-width="1.5"
+                                        />
+
+                                        <circle
+                                            cx="23"
+                                            cy="27"
+                                            r="4"
+                                            stroke-width="1.5"
+                                        />
+
+                                        <path
+                                            d="m12 46 13-13 8 8 7-9 12 14"
+                                            stroke-width="1.5"
+                                        />
+                                    </svg>
+                                </div>
+
+                                <div class="upload-title">
+                                    Add image
+                                </div>
+
+                                <span class="upload-button">
+                                    Browse
+                                </span>
+
+                            </label>
+
+                            <input
+                                id="file-input-compare-1"
+                                type="file"
+                                accept=".tif,.tiff,.png,.jpg,.jpeg"
+                            >
+
+
+                            <div
+                                id="image-preview-compare-1"
+                                class="image-preview hidden"
+                            >
+
+                                <div class="preview-image-wrap">
+                                    <img
+                                        id="preview-img-compare-1"
+                                        alt="First satellite image"
+                                    >
+
+                                    <button
+                                        id="remove-image-compare-1"
+                                        type="button"
+                                        class="remove-image"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+
+                                <div class="preview-info">
+
+                                    <div class="preview-ready">
+                                        <span></span>
+                                        Ready
+                                    </div>
+
+                                    <div
+                                        id="preview-name-compare-1"
+                                        class="preview-name"
+                                    >
+                                        —
+                                    </div>
+
+                                    <button
+                                        id="replace-image-compare-1"
+                                        type="button"
+                                        class="replace-button"
+                                    >
+                                        Replace
+                                    </button>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+
+                        <div class="compare-divider">
+                            <span>+</span>
+                        </div>
+
+
+                        <!-- SECOND IMAGE -->
+
+                        <div class="image-slot">
+
+                            <div class="slot-label">
+                                <span id="slot-2-label">
+                                    SECOND IMAGE
+                                </span>
+                            </div>
+
+                            <label
+                                id="upload-zone-compare-2"
+                                class="upload-zone compact"
+                                for="file-input-compare-2"
+                            >
+
+                                <div class="upload-illustration small">
+                                    <svg
+                                        viewBox="0 0 64 64"
+                                        fill="none"
+                                        stroke="currentColor"
+                                    >
+                                        <rect
+                                            x="8"
+                                            y="12"
+                                            width="48"
+                                            height="40"
+                                            rx="6"
+                                            stroke-width="1.5"
+                                        />
+
+                                        <circle
+                                            cx="23"
+                                            cy="27"
+                                            r="4"
+                                            stroke-width="1.5"
+                                        />
+
+                                        <path
+                                            d="m12 46 13-13 8 8 7-9 12 14"
+                                            stroke-width="1.5"
+                                        />
+                                    </svg>
+                                </div>
+
+                                <div class="upload-title">
+                                    Add image
+                                </div>
+
+                                <span class="upload-button">
+                                    Browse
+                                </span>
+
+                            </label>
+
+                            <input
+                                id="file-input-compare-2"
+                                type="file"
+                                accept=".tif,.tiff,.png,.jpg,.jpeg"
+                            >
+
+
+                            <div
+                                id="image-preview-compare-2"
+                                class="image-preview hidden"
+                            >
+
+                                <div class="preview-image-wrap">
+                                    <img
+                                        id="preview-img-compare-2"
+                                        alt="Second satellite image"
+                                    >
+
+                                    <button
+                                        id="remove-image-compare-2"
+                                        type="button"
+                                        class="remove-image"
+                                    >
+                                        ×
+                                    </button>
+                                </div>
+
+                                <div class="preview-info">
+
+                                    <div class="preview-ready">
+                                        <span></span>
+                                        Ready
+                                    </div>
+
+                                    <div
+                                        id="preview-name-compare-2"
+                                        class="preview-name"
+                                    >
+                                        —
+                                    </div>
+
+                                    <button
+                                        id="replace-image-compare-2"
+                                        type="button"
+                                        class="replace-button"
+                                    >
+                                        Replace
+                                    </button>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- Selected imagery count -->
+
+                    <div
+                        id="file-summary"
+                        class="file-summary"
+                    >
+                        Add imagery to begin.
+                    </div>
+
+
+                    <!-- Scene reference -->
+
+                    <div class="advanced-field">
+
+                        <label
+                            for="patch-id"
+                            class="field-label"
+                        >
+                            Area name
+                        </label>
+
+                        <input
+                            id="patch-id"
+                            type="text"
+                            placeholder="Optional area or scene name"
+                        >
+
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- =============================================
+                 CENTER — VIEWER
+            ============================================== -->
+
+            <div class="panel viewer-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <div class="panel-kicker">
+                            VIEW
+                        </div>
+
+                        <h2>
+                            Satellite view
+                        </h2>
+
+                    </div>
+
+
+                    <div class="viewer-tools">
+
+                        <button
+                            id="zoom-in"
+                            type="button"
+                            class="viewer-tool"
+                            title="Zoom in"
+                            disabled
+                        >
+                            +
+                        </button>
+
+                        <button
+                            id="zoom-out"
+                            type="button"
+                            class="viewer-tool"
+                            title="Zoom out"
+                            disabled
+                        >
+                            −
+                        </button>
+
+                        <button
+                            id="reset-view"
+                            type="button"
+                            class="viewer-tool"
+                            title="Reset view"
+                            disabled
+                        >
+                            ↺
+                        </button>
+
+                        <button
+                            id="fullscreen-view"
+                            type="button"
+                            class="viewer-tool"
+                            title="Fullscreen"
+                        >
+                            ⛶
+                        </button>
+
+                    </div>
+
+                </div>
+
+
+                <div
+                    id="viewer-area"
+                    class="viewer-area"
+                >
+
+                    <div class="viewer-grid"></div>
+
+
+                    <!-- Empty state -->
+
+                    <div
+                        id="viewer-empty"
+                        class="viewer-empty"
+                    >
+
+                        <div class="viewer-orbit">
+
+                            <div class="orbit-ring orbit-ring-one"></div>
+                            <div class="orbit-ring orbit-ring-two"></div>
+
+                            <div class="viewer-center">
+
+                                <svg
+                                    viewBox="0 0 48 48"
+                                    fill="none"
+                                    stroke="currentColor"
+                                >
+
+                                    <circle
+                                        cx="24"
+                                        cy="24"
+                                        r="8"
+                                        stroke-width="1.2"
+                                    />
+
+                                    <circle
+                                        cx="24"
+                                        cy="24"
+                                        r="18"
+                                        stroke-width="1"
+                                        stroke-dasharray="3 4"
+                                    />
+
+                                    <path
+                                        d="M24 5v8M24 35v8M5 24h8M35 24h8"
+                                        stroke-width="1"
+                                    />
+
+                                </svg>
+
+                            </div>
+
+                        </div>
+
+
+                        <h3>
+                            Your imagery will appear here
+                        </h3>
+
+                        <p>
+                            Add an image to start exploring the scene.
+                        </p>
+
+                    </div>
+
+
+                    <!-- Viewer image -->
+
+                    <img
+                        id="viewer-image"
+                        class="viewer-result-image hidden"
+                        alt="Satellite imagery viewer"
+                    >
+
+
+                    <!-- Compare viewer -->
+
+                    <div
+                        id="compare-viewer"
+                        class="compare-viewer hidden"
+                    >
+
+                        <div
+                            id="compare-viewer-one"
+                            class="compare-view-pane"
+                        >
+
+                            <span class="viewer-image-label">
+                                FIRST
+                            </span>
+
+                            <img
+                                id="viewer-compare-img-1"
+                                alt="First comparison image"
+                            >
+
+                        </div>
+
+
+                        <div
+                            id="compare-viewer-two"
+                            class="compare-view-pane"
+                        >
+
+                            <span class="viewer-image-label">
+                                SECOND
+                            </span>
+
+                            <img
+                                id="viewer-compare-img-2"
+                                alt="Second comparison image"
+                            >
+
+                        </div>
+
+                    </div>
+
+
+                    <!-- Evidence overlay container -->
+
+                    <div
+                        id="viewer-evidence"
+                        class="viewer-evidence hidden"
+                    ></div>
+
+                </div>
+
+
+                <div class="viewer-footer">
+
+                    <span>
+                        Satellite imagery
+                    </span>
+
+                    <span class="viewer-separator">
+                        •
+                    </span>
+
+                    <span id="viewer-status">
+                        Awaiting input
+                    </span>
+
+                </div>
+
+            </div>
+
+
+            <!-- =============================================
+                 RIGHT — AI
+            ============================================== -->
+
+            <aside class="panel intelligence-panel">
+
+                <div class="panel-header">
+
+                    <div>
+
+                        <div class="panel-kicker">
+                            AI
+                        </div>
+
+                        <h2>
+                            Analysis
+                        </h2>
+
+                    </div>
+
+                    <div class="ai-pulse">
+                        <span></span>
+                        Ready
+                    </div>
+
+                </div>
+
+
+                <div class="panel-content intelligence-content">
+
+
+                    <!-- Empty state -->
+
+                    <div
+                        id="empty-result"
+                        class="empty-result"
+                    >
+
+                        <div class="result-symbol">
+                            ✦
+                        </div>
+
+                        <h3>
+                            Ready when you are
+                        </h3>
+
+                        <p>
+                            Add imagery and ask a question.
+                            Your answer and supporting evidence
+                            will appear here.
+                        </p>
+
+                    </div>
+
+
+                    <!-- Actual result -->
+
+                    <div
+                        id="results"
+                        class="results hidden"
+                    >
+
+                        <div class="answer-card">
+
+                            <div class="answer-label">
+                                ANSWER
+                            </div>
+
+                            <div
+                                id="answer"
+                                class="answer"
+                            >
+                                —
+                            </div>
+
+                            <div
+                                id="answer-confidence"
+                                class="answer-confidence"
+                            >
+                                Confidence: N/A
+                            </div>
+
+                        </div>
+
+
+                        <div class="result-details">
+
+                            <div class="detail-row">
+
+                                <span>
+                                    Analysis
+                                </span>
+
+                                <strong
+                                    id="analysis-task"
+                                >
+                                    N/A
+                                </strong>
+
+                            </div>
+
+
+                            <div class="detail-row">
+
+                                <span>
+                                    Method
+                                </span>
+
+                                <strong
+                                    id="selected-tool"
+                                >
+                                    N/A
+                                </strong>
+
+                            </div>
+
+
+                            <div class="detail-row">
+
+                                <span>
+                                    Status
+                                </span>
+
+                                <strong
+                                    id="execution-status"
+                                >
+                                    N/A
+                                </strong>
+
+                            </div>
+
+
+                            <div class="detail-row">
+
+                                <span>
+                                    Time
+                                </span>
+
+                                <strong
+                                    id="execution-time"
+                                >
+                                    N/A
+                                </strong>
+
+                            </div>
+
+
+                            <div
+                                id="grounding-detail"
+                                class="detail-row hidden"
+                            >
+
+                                <span>
+                                    Grounding
+                                </span>
+
+                                <strong
+                                    id="grounding-mode"
+                                >
+                                    N/A
+                                </strong>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </aside>
+
+        </section>
+
+
+        <!-- =================================================
+             ACTION BAR
+        ================================================== -->
+
+        <section class="action-section">
+
+            <div class="action-copy">
+
+                <span class="action-dot"></span>
+
+                <span id="action-message">
+                    Add imagery and ask a question to begin.
+                </span>
+
+            </div>
+
+
+            <button
+                id="analyze-button"
+                class="primary-action"
+                type="button"
+            >
+
+                <span>
+                    Analyse scene
+                </span>
+
+                <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                >
+                    <path d="M5 12h14" />
+                    <path d="m13 6 6 6-6 6" />
+                </svg>
+
+            </button>
+
+
+            <div
+                id="loading"
+                class="loading hidden"
+            >
+                Analysing your imagery...
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             ERROR
+        ================================================== -->
+
+        <section
+            id="error-panel"
+            class="error-panel hidden"
+        >
+
+            <div class="error-icon">
+                !
+            </div>
+
+            <div>
+
+                <strong>
+                    Something went wrong
+                </strong>
+
+                <p id="error-message"></p>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             EVIDENCE
+        ================================================== -->
+
+        <section
+            id="evidence-section"
+            class="panel evidence-panel hidden"
+        >
+
+            <div class="panel-header">
+
+                <div>
+
+                    <div class="panel-kicker">
+                        EVIDENCE
+                    </div>
+
+                    <h2>
+                        Supporting imagery
+                    </h2>
+
+                </div>
+
+                <div class="panel-status">
+                    DETECTED
+                </div>
+
+            </div>
+
+
+            <div class="evidence-content">
+
+                <div class="evidence-image-wrap">
+
+                    <img
+                        id="evidence-image"
+                        alt="SatQueryAI visual evidence"
+                    >
+
+                </div>
+
+
+                <div class="evidence-meta">
+
+                    <div class="evidence-item">
+
+                        <span>
+                            Region
+                        </span>
+
+                        <strong id="bbox-normalized">
+                            N/A
+                        </strong>
+
+                    </div>
+
+
+                    <div class="evidence-item">
+
+                        <span>
+                            Image area
+                        </span>
+
+                        <strong id="bbox-pixels">
+                            N/A
+                        </strong>
+
+                    </div>
+
+
+                    <div class="evidence-item">
+
+                        <span>
+                            View
+                        </span>
+
+                        <strong id="rgb-bands">
+                            N/A
+                        </strong>
+
+                    </div>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- =================================================
+             TECHNICAL DETAILS
+        ================================================== -->
+
+        <section class="technical-area">
+
+            <details>
+
+                <summary>
+
+                    <span>
+                        Analysis details
+                    </span>
+
+                    <span class="technical-subtitle">
+                        Technical execution trace
+                    </span>
+
+                </summary>
+
+
+                <div class="technical-grid">
+
+                    <div class="technical-card">
+
+                        <div class="technical-card-title">
+                            Execution trace
+                        </div>
+
+                        <pre id="execution-trace"></pre>
+
+                    </div>
+
+
+                    <div class="technical-card">
+
+                        <div class="technical-card-title">
+                            API response
+                        </div>
+
+                        <pre id="full-response"></pre>
+
+                    </div>
+
+                </div>
+
+            </details>
+
+        </section>
+
+
+        <!-- =================================================
+             ADVANCED
+        ================================================== -->
+
+        <section class="advanced-section">
+
+            <details>
+
+                <summary>
+
+                    <span>
+                        Advanced question options
+                    </span>
+
+                    <span class="technical-subtitle">
+                        Optional
+                    </span>
+
+                </summary>
+
+
+                <div class="advanced-options">
+
+                    <div class="advanced-option">
+
+                        <label for="option-a">
+                            A
+                        </label>
+
+                        <input
+                            id="option-a"
+                            type="text"
+                            placeholder="Option A"
+                        >
+
+                    </div>
+
+
+                    <div class="advanced-option">
+
+                        <label for="option-b">
+                            B
+                        </label>
+
+                        <input
+                            id="option-b"
+                            type="text"
+                            placeholder="Option B"
+                        >
+
+                    </div>
+
+
+                    <div class="advanced-option">
+
+                        <label for="option-c">
+                            C
+                        </label>
+
+                        <input
+                            id="option-c"
+                            type="text"
+                            placeholder="Option C"
+                        >
+
+                    </div>
+
+
+                    <div class="advanced-option">
+
+                        <label for="option-d">
+                            D
+                        </label>
+
+                        <input
+                            id="option-d"
+                            type="text"
+                            placeholder="Option D"
+                        >
+
+                    </div>
+
+                </div>
+
+            </details>
+
+        </section>
+
+    </main>
+
+
+    <!-- =====================================================
+         FOOTER
+    ====================================================== -->
+
+    <footer class="footer">
+
+        <div class="footer-brand">
+            SatQueryAI
+        </div>
+
+        <div class="footer-description">
+            Earth Observation Intelligence
+        </div>
+
+    </footer>
+
+</div>
+
+
+<script src="app.js"></script>
+<script src="auth-guard.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "notebook": "D:\\SatQueryAI\\kaggle_downloads\\notebooke1eb76f0a0.ipynb",
+  "point_cell": 45,
+  "c3_cell": 28,
+  "helper_cells": {
+    "heatmap_moments": 23,
+    "heatmap_to_box": 23
+  },
+  "helpers_found": [
+    "heatmap_moments",
+    "heatmap_to_box"
+  ],
+  "outputs": [
+    "D:\\SatQueryAI\\src\\models\\grounding_recovered\\point_grounding_recovered.py",
+    "D:\\SatQueryAI\\src\\models\\grounding_recovered\\c3_reference_grounding_recovered.py"
+  ]
+}

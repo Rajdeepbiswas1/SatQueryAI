@@ -1,0 +1,5204 @@
+====================================================================================================
+FILE: D:\SatQueryAI\src\models\grounding_heatmap_model.py
+====================================================================================================
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ============================================================
+# Bounding-box IoU
+# ============================================================
+
+def box_iou(boxes1, boxes2, eps=1e-6):
+    """
+    Calculate IoU between two batches of boxes.
+
+    Format:
+        [x1, y1, x2, y2]
+    """
+
+    x1 = torch.maximum(
+        boxes1[:, 0],
+        boxes2[:, 0],
+    )
+
+    y1 = torch.maximum(
+        boxes1[:, 1],
+        boxes2[:, 1],
+    )
+
+    x2 = torch.minimum(
+        boxes1[:, 2],
+        boxes2[:, 2],
+    )
+
+    y2 = torch.minimum(
+        boxes1[:, 3],
+        boxes2[:, 3],
+    )
+
+    inter_w = (
+        x2 - x1
+    ).clamp(min=0.0)
+
+    inter_h = (
+        y2 - y1
+    ).clamp(min=0.0)
+
+    intersection = (
+        inter_w * inter_h
+    )
+
+    area1 = (
+        (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0.0)
+        *
+        (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0.0)
+    )
+
+    area2 = (
+        (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0.0)
+        *
+        (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0.0)
+    )
+
+    union = (
+        area1
+        + area2
+        - intersection
+    )
+
+    return intersection / (
+        union + eps
+    )
+
+
+# ============================================================
+# Boxes -> target heatmap
+# ============================================================
+
+def boxes_to_heatmaps(
+    boxes,
+    grid_size=14,
+):
+    """
+    Convert normalized boxes into soft 14x14 spatial maps.
+
+    Each cell receives the fraction of its area covered by the
+    ground-truth box.
+    """
+
+    device = boxes.device
+    dtype = boxes.dtype
+
+    batch_size = boxes.size(0)
+
+    edges = torch.linspace(
+        0.0,
+        1.0,
+        grid_size + 1,
+        device=device,
+        dtype=dtype,
+    )
+
+    cell_x1 = edges[:-1].view(
+        1,
+        1,
+        grid_size,
+    )
+
+    cell_x2 = edges[1:].view(
+        1,
+        1,
+        grid_size,
+    )
+
+    cell_y1 = edges[:-1].view(
+        1,
+        grid_size,
+        1,
+    )
+
+    cell_y2 = edges[1:].view(
+        1,
+        grid_size,
+        1,
+    )
+
+    bx1 = boxes[:, 0].view(
+        batch_size,
+        1,
+        1,
+    )
+
+    by1 = boxes[:, 1].view(
+        batch_size,
+        1,
+        1,
+    )
+
+    bx2 = boxes[:, 2].view(
+        batch_size,
+        1,
+        1,
+    )
+
+    by2 = boxes[:, 3].view(
+        batch_size,
+        1,
+        1,
+    )
+
+    inter_x1 = torch.maximum(
+        cell_x1,
+        bx1,
+    )
+
+    inter_x2 = torch.minimum(
+        cell_x2,
+        bx2,
+    )
+
+    inter_y1 = torch.maximum(
+        cell_y1,
+        by1,
+    )
+
+    inter_y2 = torch.minimum(
+        cell_y2,
+        by2,
+    )
+
+    inter_w = (
+        inter_x2 - inter_x1
+    ).clamp(min=0.0)
+
+    inter_h = (
+        inter_y2 - inter_y1
+    ).clamp(min=0.0)
+
+    intersection = (
+        inter_w * inter_h
+    )
+
+    cell_area = 1.0 / (
+        grid_size * grid_size
+    )
+
+    heatmap = (
+        intersection / cell_area
+    ).clamp(
+        min=0.0,
+        max=1.0,
+    )
+
+    return heatmap
+
+
+# ============================================================
+# Spatial softmax loss
+# ============================================================
+
+def spatial_softmax_loss(
+    logits,
+    target_heatmap,
+    temperature=1.0,
+    eps=1e-8,
+):
+    """
+    Treat all 196 spatial cells as one probability distribution.
+    """
+
+    batch_size = logits.size(0)
+
+    logits_flat = logits.reshape(
+        batch_size,
+        -1,
+    )
+
+    target_flat = target_heatmap.reshape(
+        batch_size,
+        -1,
+    )
+
+    target_distribution = (
+        target_flat
+        /
+        (
+            target_flat.sum(
+                dim=1,
+                keepdim=True,
+            )
+            + eps
+        )
+    )
+
+    log_pred_distribution = F.log_softmax(
+        logits_flat / temperature,
+        dim=1,
+    )
+
+    loss = -(
+        target_distribution
+        * log_pred_distribution
+    ).sum(dim=1)
+
+    return loss.mean()
+
+
+# ============================================================
+# Spatial geometry extraction
+# ============================================================
+
+def extract_spatial_geometry(
+    heatmap,
+    grid_size=14,
+    eps=1e-8,
+):
+    """
+    Extract differentiable spatial geometry from the predicted
+    probability heatmap.
+
+    Returns 8 values:
+
+        0 = center_x
+        1 = center_y
+        2 = std_x
+        3 = std_y
+        4 = estimated_x1
+        5 = estimated_y1
+        6 = estimated_x2
+        7 = estimated_y2
+    """
+
+    batch_size = heatmap.size(0)
+
+    device = heatmap.device
+    dtype = heatmap.dtype
+
+    coords = (
+        torch.arange(
+            grid_size,
+            device=device,
+            dtype=dtype,
+        )
+        + 0.5
+    ) / grid_size
+
+    x_coords = coords.view(
+        1,
+        1,
+        grid_size,
+    )
+
+    y_coords = coords.view(
+        1,
+        grid_size,
+        1,
+    )
+
+    # --------------------------------------------------------
+    # Spatial center
+    # --------------------------------------------------------
+
+    center_x = (
+        heatmap
+        * x_coords
+    ).sum(dim=(1, 2))
+
+    center_y = (
+        heatmap
+        * y_coords
+    ).sum(dim=(1, 2))
+
+    # --------------------------------------------------------
+    # Spatial variance
+    # --------------------------------------------------------
+
+    center_x_expanded = center_x.view(
+        batch_size,
+        1,
+        1,
+    )
+
+    center_y_expanded = center_y.view(
+        batch_size,
+        1,
+        1,
+    )
+
+    variance_x = (
+        heatmap
+        * (
+            x_coords
+            - center_x_expanded
+        ).pow(2)
+    ).sum(dim=(1, 2))
+
+    variance_y = (
+        heatmap
+        * (
+            y_coords
+            - center_y_expanded
+        ).pow(2)
+    ).sum(dim=(1, 2))
+
+    std_x = torch.sqrt(
+        variance_x + eps
+    )
+
+    std_y = torch.sqrt(
+        variance_y + eps
+    )
+
+    # --------------------------------------------------------
+    # Approximate rectangle dimensions
+    #
+    # For a uniform rectangle:
+    #
+    #     std = width / sqrt(12)
+    #
+    # Therefore:
+    #
+    #     width ≈ std * sqrt(12)
+    # --------------------------------------------------------
+
+    estimated_width = (
+        std_x
+        * (12.0 ** 0.5)
+    )
+
+    estimated_height = (
+        std_y
+        * (12.0 ** 0.5)
+    )
+
+    estimated_width = estimated_width.clamp(
+        min=0.02,
+        max=1.0,
+    )
+
+    estimated_height = estimated_height.clamp(
+        min=0.02,
+        max=1.0,
+    )
+
+    # --------------------------------------------------------
+    # Base geometry box
+    # --------------------------------------------------------
+
+    estimated_x1 = (
+        center_x
+        - estimated_width / 2.0
+    ).clamp(
+        min=0.0,
+        max=1.0,
+    )
+
+    estimated_y1 = (
+        center_y
+        - estimated_height / 2.0
+    ).clamp(
+        min=0.0,
+        max=1.0,
+    )
+
+    estimated_x2 = (
+        center_x
+        + estimated_width / 2.0
+    ).clamp(
+        min=0.0,
+        max=1.0,
+    )
+
+    estimated_y2 = (
+        center_y
+        + estimated_height / 2.0
+    ).clamp(
+        min=0.0,
+        max=1.0,
+    )
+
+    geometry = torch.stack(
+        [
+            center_x,
+            center_y,
+            std_x,
+            std_y,
+            estimated_x1,
+            estimated_y1,
+            estimated_x2,
+            estimated_y2,
+        ],
+        dim=-1,
+    )
+
+    return geometry
+
+
+# ============================================================
+# Grounding Heatmap Model
+# ============================================================
+
+class GroundingHeatmapModel(nn.Module):
+    """
+    Reference grounding model.
+
+    Stage 1:
+        S1 + S2 + text
+        -> 196 spatial compatibility scores
+        -> 14x14 probability heatmap
+
+    Stage 2:
+        heatmap
+        -> spatial geometry
+        -> geometry-derived base box
+        -> learned box correction
+    """
+
+    def __init__(
+        self,
+        input_dim=768,
+        hidden_dim=256,
+        grid_size=14,
+    ):
+        super().__init__()
+
+        self.grid_size = grid_size
+        self.hidden_dim = hidden_dim
+
+        # ----------------------------------------------------
+        # Visual fusion
+        # ----------------------------------------------------
+
+        self.visual_fusion = nn.Sequential(
+            nn.Linear(
+                input_dim * 2,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Query projection
+        # ----------------------------------------------------
+
+        self.query_proj = nn.Sequential(
+            nn.Linear(
+                input_dim,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Spatial positions
+        # ----------------------------------------------------
+
+        self.spatial_pos = nn.Parameter(
+            torch.randn(
+                1,
+                grid_size * grid_size,
+                hidden_dim,
+            )
+            * 0.02
+        )
+
+        # ----------------------------------------------------
+        # Visual semantic projection
+        # ----------------------------------------------------
+
+        self.visual_match = nn.Linear(
+            hidden_dim,
+            hidden_dim,
+        )
+
+        # ----------------------------------------------------
+        # Query semantic projection
+        # ----------------------------------------------------
+
+        self.query_match = nn.Linear(
+            hidden_dim,
+            hidden_dim,
+        )
+
+        self.match_norm = nn.LayerNorm(
+            hidden_dim
+        )
+
+        # ----------------------------------------------------
+        # Localization score
+        # ----------------------------------------------------
+
+        self.match_head = nn.Sequential(
+            nn.Linear(
+                hidden_dim,
+                hidden_dim // 2,
+            ),
+            nn.GELU(),
+            nn.Linear(
+                hidden_dim // 2,
+                1,
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Global visual feature
+        # ----------------------------------------------------
+
+        self.spatial_summary = nn.Sequential(
+            nn.Linear(
+                hidden_dim,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Box correction input
+        #
+        # local feature: 256
+        # global feature: 256
+        # query: 256
+        # geometry: 8
+        # base box: 4
+        #
+        # total = 780
+        # ----------------------------------------------------
+
+        refinement_dim = (
+            hidden_dim * 3
+            + 8
+            + 4
+        )
+
+        self.box_correction_head = nn.Sequential(
+            nn.Linear(
+                refinement_dim,
+                hidden_dim,
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            ),
+
+            nn.Linear(
+                hidden_dim,
+                hidden_dim // 2,
+            ),
+            nn.GELU(),
+
+            nn.Linear(
+                hidden_dim // 2,
+                4,
+            ),
+        )
+
+    # ========================================================
+    # Forward
+    # ========================================================
+
+    def forward(
+        self,
+        s1,
+        s2,
+        text_embedding,
+    ):
+        batch_size = s1.size(0)
+
+        # ----------------------------------------------------
+        # 1. Fuse S1 + S2
+        # ----------------------------------------------------
+
+        visual = torch.cat(
+            [
+                s1,
+                s2,
+            ],
+            dim=-1,
+        )
+
+        visual = self.visual_fusion(
+            visual
+        )
+
+        # [B,196,256]
+
+        # ----------------------------------------------------
+        # 2. Spatial position
+        # ----------------------------------------------------
+
+        visual = (
+            visual
+            + self.spatial_pos
+        )
+
+        # ----------------------------------------------------
+        # 3. Query
+        # ----------------------------------------------------
+
+        query = self.query_proj(
+            text_embedding
+        )
+
+        # [B,256]
+
+        # ----------------------------------------------------
+        # 4. Cross-modal compatibility
+        # ----------------------------------------------------
+
+        visual_match = self.visual_match(
+            visual
+        )
+
+        query_match = self.query_match(
+            query
+        ).unsqueeze(1)
+
+        joint = (
+            visual_match
+            + query_match
+        )
+
+        joint = self.match_norm(
+            F.gelu(joint)
+        )
+
+        # ----------------------------------------------------
+        # 5. Localization logits
+        # ----------------------------------------------------
+
+        heatmap_logits = self.match_head(
+            joint
+        ).squeeze(-1)
+
+        heatmap_logits = heatmap_logits.reshape(
+            batch_size,
+            self.grid_size,
+            self.grid_size,
+        )
+
+        # ----------------------------------------------------
+        # 6. Spatial probability
+        # ----------------------------------------------------
+
+        weights = torch.softmax(
+            heatmap_logits.reshape(
+                batch_size,
+                self.grid_size
+                * self.grid_size,
+            ),
+            dim=1,
+        )
+
+        weights_2d = weights.reshape(
+            batch_size,
+            self.grid_size,
+            self.grid_size,
+        )
+
+        # ----------------------------------------------------
+        # 7. Heatmap-selected local feature
+        # ----------------------------------------------------
+
+        local_feature = (
+            visual
+            * weights.unsqueeze(-1)
+        ).sum(dim=1)
+
+        # ----------------------------------------------------
+        # 8. Global visual feature
+        # ----------------------------------------------------
+
+        global_visual = visual.mean(
+            dim=1
+        )
+
+        global_visual = self.spatial_summary(
+            global_visual
+        )
+
+        # ----------------------------------------------------
+        # 9. Extract explicit spatial geometry
+        # ----------------------------------------------------
+
+        geometry = extract_spatial_geometry(
+            weights_2d,
+            grid_size=self.grid_size,
+        )
+
+        # ----------------------------------------------------
+        # 10. Base box comes DIRECTLY from heatmap geometry
+        # ----------------------------------------------------
+
+        base_box = geometry[
+            :,
+            4:8,
+        ]
+
+        # ----------------------------------------------------
+        # 11. Prepare correction features
+        # ----------------------------------------------------
+
+        correction_input = torch.cat(
+            [
+                local_feature,
+                global_visual,
+                query,
+                geometry,
+                base_box,
+            ],
+            dim=-1,
+        )
+
+        # ----------------------------------------------------
+        # 12. Predict SMALL coordinate corrections
+        # ----------------------------------------------------
+
+        correction_raw = (
+            self.box_correction_head(
+                correction_input
+            )
+        )
+
+        # Limit correction magnitude.
+        #
+        # tanh -> [-1,1]
+        # * 0.20 -> [-0.20,0.20]
+        #
+        # The model therefore modifies the geometry estimate
+        # rather than completely replacing it.
+        # ----------------------------------------------------
+
+        correction = (
+            torch.tanh(
+                correction_raw
+            )
+            * 0.20
+        )
+
+        # ----------------------------------------------------
+        # 13. Correct the geometry-derived box
+        # ----------------------------------------------------
+
+        box = (
+            base_box
+            + correction
+        )
+
+        # ----------------------------------------------------
+        # 14. Keep coordinates valid
+        # ----------------------------------------------------
+
+        x1 = box[:, 0].clamp(
+            min=0.0,
+            max=1.0,
+        )
+
+        y1 = box[:, 1].clamp(
+            min=0.0,
+            max=1.0,
+        )
+
+        x2 = box[:, 2].clamp(
+            min=0.0,
+            max=1.0,
+        )
+
+        y2 = box[:, 3].clamp(
+            min=0.0,
+            max=1.0,
+        )
+
+        # ----------------------------------------------------
+        # Ensure valid ordering
+        # ----------------------------------------------------
+
+        final_x1 = torch.minimum(
+            x1,
+            x2,
+        )
+
+        final_y1 = torch.minimum(
+            y1,
+            y2,
+        )
+
+        final_x2 = torch.maximum(
+            x1,
+            x2,
+        )
+
+        final_y2 = torch.maximum(
+            y1,
+            y2,
+        )
+
+        final_box = torch.stack(
+            [
+                final_x1,
+                final_y1,
+                final_x2,
+                final_y2,
+            ],
+            dim=-1,
+        )
+
+        return {
+            "box": final_box,
+            "base_box": base_box,
+            "correction": correction,
+            "geometry": geometry,
+            "heatmap_logits": heatmap_logits,
+            "heatmap": weights_2d,
+        }
+
+
+# ============================================================
+# Combined loss
+# ============================================================
+
+def grounding_heatmap_loss(
+    outputs,
+    target_boxes,
+    heatmap_weight=1.0,
+    box_weight=0.25,
+):
+    """
+    Heatmap localization + final box correction loss.
+    """
+
+    target_heatmap = boxes_to_heatmaps(
+        target_boxes,
+        grid_size=14,
+    )
+
+    heatmap_loss = spatial_softmax_loss(
+        outputs["heatmap_logits"],
+        target_heatmap,
+    )
+
+    box_loss = F.smooth_l1_loss(
+        outputs["box"],
+        target_boxes,
+    )
+
+    total_loss = (
+        heatmap_weight
+        * heatmap_loss
+        +
+        box_weight
+        * box_loss
+    )
+
+    return {
+        "total": total_loss,
+        "heatmap": heatmap_loss,
+        "box": box_loss,
+        "target_heatmap": target_heatmap,
+    }
+
+====================================================================================================
+FILE: D:\SatQueryAI\src\models\train_reference_grounding.py
+====================================================================================================
+import os
+import sys
+import random
+import re
+
+# ============================================================
+# PROJECT ROOT
+# ============================================================
+
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+
+from torch.utils.data import Dataset, DataLoader
+
+from src.models.grounding_heatmap_model import GroundingHeatmapModel
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+TRAIN_PARQUET = (
+    r"D:\SatQueryAI\data\processed"
+    r"\reference_grounding_split"
+    r"\reference_train.parquet"
+)
+
+VAL_PARQUET = (
+    r"D:\SatQueryAI\data\processed"
+    r"\reference_grounding_split"
+    r"\reference_val.parquet"
+)
+
+TEXT_CACHE_DIR = (
+    r"D:\SatQueryAI\data\processed"
+    r"\grounding_text_embeddings"
+    r"\grounding_text_embedding_shards"
+)
+
+DOFA_ROOT = (
+    r"D:\SatQueryAI\data\processed"
+    r"\dofa_features_download"
+    r"\dofa_features"
+)
+
+CHECKPOINT_DIR = (
+    r"D:\SatQueryAI\models\checkpoints"
+    r"\reference_grounding_large"
+)
+
+BEST_CHECKPOINT = os.path.join(
+    CHECKPOINT_DIR,
+    "best.pt",
+)
+
+LAST_CHECKPOINT = os.path.join(
+    CHECKPOINT_DIR,
+    "last.pt",
+)
+
+HISTORY_PATH = os.path.join(
+    CHECKPOINT_DIR,
+    "training_history.csv",
+)
+
+SEED = 42
+
+BATCH_SIZE = 32
+NUM_EPOCHS = 25
+
+LEARNING_RATE = 2e-4
+WEIGHT_DECAY = 1e-4
+
+NUM_WORKERS = 0
+
+DEVICE = torch.device("cpu")
+
+QUANTILE_LOW = 0.10
+QUANTILE_HIGH = 0.90
+
+HEATMAP_WEIGHT = 1.0
+
+# Small auxiliary contribution only.
+# The final box is still obtained from the heatmap.
+BOX_WEIGHT = 0.10
+
+
+# ============================================================
+# REPRODUCIBILITY
+# ============================================================
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+set_seed(SEED)
+
+
+# ============================================================
+# IOU
+# ============================================================
+
+def box_iou(box_a, box_b):
+
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+
+    intersection = iw * ih
+
+    area_a = (
+        max(0.0, ax2 - ax1)
+        *
+        max(0.0, ay2 - ay1)
+    )
+
+    area_b = (
+        max(0.0, bx2 - bx1)
+        *
+        max(0.0, by2 - by1)
+    )
+
+    union = (
+        area_a
+        + area_b
+        - intersection
+    )
+
+    if union <= 0.0:
+        return 0.0
+
+    return intersection / union
+
+
+# ============================================================
+# HEATMAP → BOX
+# ============================================================
+
+def quantile_from_distribution(values, q):
+
+    values = np.asarray(
+        values,
+        dtype=np.float64,
+    )
+
+    values = np.maximum(
+        values,
+        0.0,
+    )
+
+    total = values.sum()
+
+    if total <= 0.0:
+        return 0.5
+
+    values = values / total
+
+    cdf = np.cumsum(values)
+
+    index = np.searchsorted(
+        cdf,
+        q,
+        side="left",
+    )
+
+    index = max(
+        0,
+        min(
+            index,
+            len(values) - 1,
+        ),
+    )
+
+    return float(
+        (index + 0.5)
+        /
+        len(values)
+    )
+
+
+def heatmap_to_box(
+    heatmap,
+    low=QUANTILE_LOW,
+    high=QUANTILE_HIGH,
+):
+
+    heatmap = np.asarray(
+        heatmap,
+        dtype=np.float64,
+    )
+
+    heatmap = np.maximum(
+        heatmap,
+        0.0,
+    )
+
+    total = heatmap.sum()
+
+    if total <= 0.0:
+        return [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+        ]
+
+    heatmap = (
+        heatmap
+        /
+        total
+    )
+
+    x_distribution = heatmap.sum(
+        axis=0
+    )
+
+    y_distribution = heatmap.sum(
+        axis=1
+    )
+
+    x1 = quantile_from_distribution(
+        x_distribution,
+        low,
+    )
+
+    x2 = quantile_from_distribution(
+        x_distribution,
+        high,
+    )
+
+    y1 = quantile_from_distribution(
+        y_distribution,
+        low,
+    )
+
+    y2 = quantile_from_distribution(
+        y_distribution,
+        high,
+    )
+
+    return [
+        min(x1, x2),
+        min(y1, y2),
+        max(x1, x2),
+        max(y1, y2),
+    ]
+
+
+# ============================================================
+# DOFA CACHE
+# ============================================================
+
+class DofaShardCache:
+
+    def __init__(self, directory):
+
+        self.directory = directory
+
+        self.files = sorted(
+            [
+                os.path.join(
+                    directory,
+                    filename,
+                )
+                for filename in os.listdir(
+                    directory
+                )
+                if filename.endswith(".pt")
+            ]
+        )
+
+        if not self.files:
+            raise RuntimeError(
+                f"No DOFA shards found in:\n{directory}"
+            )
+
+        self.index = {}
+        self.shards = {}
+
+        print(
+            f"Found {len(self.files)} cache shards "
+            f"in {directory}"
+        )
+
+        for shard_id, filepath in enumerate(
+            self.files
+        ):
+
+            data = torch.load(
+                filepath,
+                map_location="cpu",
+            )
+
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"Unexpected DOFA shard format:\n"
+                    f"{filepath}"
+                )
+
+            required = [
+                "patch_ids",
+                "s1",
+                "s2",
+            ]
+
+            for key in required:
+                if key not in data:
+                    raise RuntimeError(
+                        f"Missing '{key}' in:\n"
+                        f"{filepath}"
+                    )
+
+            self.shards[shard_id] = data
+
+            patch_ids = data["patch_ids"]
+
+            for local_index, patch_id in enumerate(
+                patch_ids
+            ):
+
+                if torch.is_tensor(patch_id):
+                    patch_id = patch_id.item()
+
+                patch_id = str(patch_id)
+
+                if patch_id in self.index:
+                    raise RuntimeError(
+                        f"Duplicate patch ID in DOFA cache:\n"
+                        f"{patch_id}"
+                    )
+
+                self.index[patch_id] = (
+                    shard_id,
+                    local_index,
+                )
+
+        print(
+            f"Indexed {len(self.index):,} "
+            f"cached patch IDs"
+        )
+
+    def get(self, patch_id):
+
+        patch_id = str(patch_id)
+
+        if patch_id not in self.index:
+            raise KeyError(
+                f"Patch not found in DOFA cache:\n"
+                f"{patch_id}"
+            )
+
+        shard_id, local_index = (
+            self.index[patch_id]
+        )
+
+        shard = self.shards[
+            shard_id
+        ]
+
+        return (
+            shard["s1"][local_index],
+            shard["s2"][local_index],
+        )
+
+
+# ============================================================
+# TEXT EMBEDDING CACHE
+# ============================================================
+
+class GroundingTextCache:
+
+    def __init__(self, directory):
+
+        self.directory = directory
+
+        self.files = sorted(
+            [
+                os.path.join(
+                    directory,
+                    filename,
+                )
+                for filename in os.listdir(
+                    directory
+                )
+                if filename.endswith(".pt")
+            ]
+        )
+
+        if not self.files:
+            raise RuntimeError(
+                f"No grounding text shards found in:\n"
+                f"{directory}"
+            )
+
+        self.index = {}
+        self.shards = {}
+
+        print(
+            f"Found {len(self.files)} text embedding shards"
+        )
+
+        for shard_id, filepath in enumerate(
+            self.files
+        ):
+
+            data = torch.load(
+                filepath,
+                map_location="cpu",
+            )
+
+            if not isinstance(data, dict):
+                raise RuntimeError(
+                    f"Unexpected text shard format:\n"
+                    f"{filepath}"
+                )
+
+            # ------------------------------------------------
+            # This is the VERIFIED shard schema:
+            #
+            # source_row_index
+            # patch_ids
+            # text_embeddings
+            # points
+            # target_boxes
+            # modes
+            # categories
+            # ------------------------------------------------
+
+            required = [
+                "source_row_index",
+                "text_embeddings",
+            ]
+
+            for key in required:
+                if key not in data:
+                    raise RuntimeError(
+                        f"Missing '{key}' in:\n"
+                        f"{filepath}"
+                    )
+
+            source_indices = data[
+                "source_row_index"
+            ]
+
+            embeddings = data[
+                "text_embeddings"
+            ]
+
+            if not torch.is_tensor(
+                source_indices
+            ):
+                raise RuntimeError(
+                    f"'source_row_index' is not a tensor:\n"
+                    f"{filepath}"
+                )
+
+            if not torch.is_tensor(
+                embeddings
+            ):
+                raise RuntimeError(
+                    f"'text_embeddings' is not a tensor:\n"
+                    f"{filepath}"
+                )
+
+            if (
+                embeddings.ndim != 2
+                or embeddings.shape[1] != 768
+            ):
+                raise RuntimeError(
+                    f"Unexpected text embedding shape "
+                    f"{embeddings.shape} in:\n"
+                    f"{filepath}"
+                )
+
+            if (
+                len(source_indices)
+                != len(embeddings)
+            ):
+                raise RuntimeError(
+                    "source_row_index and "
+                    "text_embeddings lengths differ "
+                    f"in:\n{filepath}"
+                )
+
+            self.shards[shard_id] = data
+
+            for local_index, row_index in enumerate(
+                source_indices.tolist()
+            ):
+
+                row_index = int(
+                    row_index
+                )
+
+                if row_index in self.index:
+                    raise RuntimeError(
+                        "Duplicate source_row_index "
+                        f"{row_index} across text cache shards."
+                    )
+
+                self.index[row_index] = (
+                    shard_id,
+                    local_index,
+                )
+
+        print(
+            f"Indexed {len(self.index):,} "
+            f"text embeddings"
+        )
+
+    def get(self, source_row_index):
+
+        source_row_index = int(
+            source_row_index
+        )
+
+        if (
+            source_row_index
+            not in self.index
+        ):
+            raise KeyError(
+                "Text embedding missing for "
+                f"source row {source_row_index}"
+            )
+
+        shard_id, local_index = (
+            self.index[
+                source_row_index
+            ]
+        )
+
+        return (
+            self.shards[
+                shard_id
+            ]["text_embeddings"][
+                local_index
+            ].float()
+        )
+
+
+# ============================================================
+# REFERENCE GROUNDING DATASET
+# ============================================================
+
+class ReferenceGroundingDataset(
+    Dataset
+):
+
+    def __init__(
+        self,
+        parquet_path,
+        dofa_cache,
+        text_cache,
+    ):
+
+        self.df = pd.read_parquet(
+            parquet_path
+        )
+
+        self.dofa_cache = (
+            dofa_cache
+        )
+
+        self.text_cache = (
+            text_cache
+        )
+
+        print(
+            f"Loaded {len(self.df):,} rows from:"
+            f"\n  {parquet_path}"
+        )
+
+        # ----------------------------------------------------
+        # Required columns
+        # ----------------------------------------------------
+
+        required = [
+            "ID",
+            "patch_id",
+            "input",
+            "output",
+            "type",
+            "category",
+        ]
+
+        missing = [
+            column
+            for column in required
+            if column not in self.df.columns
+        ]
+
+        if missing:
+            raise RuntimeError(
+                "Missing dataset columns: "
+                + ", ".join(missing)
+            )
+
+        # ----------------------------------------------------
+        # Safety checks
+        # ----------------------------------------------------
+
+        type_ok = (
+            self.df["type"]
+            .astype(str)
+            .str.lower()
+            .eq("bounding box")
+        )
+
+        category_ok = (
+            self.df["category"]
+            .astype(str)
+            .str.lower()
+            .eq("reference")
+        )
+
+        if not type_ok.all():
+            raise RuntimeError(
+                "Training/validation parquet contains "
+                "non-bounding-box examples."
+            )
+
+        if not category_ok.all():
+            raise RuntimeError(
+                "Training/validation parquet contains "
+                "non-reference examples."
+            )
+
+        # ----------------------------------------------------
+        # Build stable source-row mapping.
+        #
+        # The split generator preserved the original
+        # annotation row under original_row_index.
+        # ----------------------------------------------------
+
+        if (
+            "original_row_index"
+            not in self.df.columns
+        ):
+            raise RuntimeError(
+                "original_row_index is missing from "
+                f"{parquet_path}.\n"
+                "The split must be regenerated with "
+                "the original annotation index preserved."
+            )
+
+        self.df[
+            "original_row_index"
+        ] = self.df[
+            "original_row_index"
+        ].astype(int)
+
+        # ----------------------------------------------------
+        # Validate every row has a cached embedding
+        # before training starts.
+        # ----------------------------------------------------
+
+        missing_embeddings = []
+
+        for row_index in self.df[
+            "original_row_index"
+        ].tolist():
+
+            if (
+                row_index
+                not in self.text_cache.index
+            ):
+
+                missing_embeddings.append(
+                    row_index
+                )
+
+                if len(
+                    missing_embeddings
+                ) >= 10:
+                    break
+
+        if missing_embeddings:
+            raise RuntimeError(
+                "Missing text embeddings for "
+                "source rows: "
+                + str(missing_embeddings)
+            )
+
+    def __len__(self):
+        return len(self.df)
+
+    def parse_box(self, value):
+
+        if isinstance(
+            value,
+            str,
+        ):
+
+            numbers = re.findall(
+                r"-?(?:\d+(?:\.\d*)?|\.\d+)",
+                value,
+            )
+
+            if len(numbers) < 4:
+                raise RuntimeError(
+                    f"Could not parse target box:\n"
+                    f"{value}"
+                )
+
+            box = [
+                float(numbers[0]),
+                float(numbers[1]),
+                float(numbers[2]),
+                float(numbers[3]),
+            ]
+
+        else:
+
+            box = np.asarray(
+                value,
+                dtype=np.float32,
+            ).reshape(-1).tolist()
+
+            if len(box) < 4:
+                raise RuntimeError(
+                    f"Invalid target box:\n"
+                    f"{value}"
+                )
+
+            box = box[:4]
+
+        x1, y1, x2, y2 = box
+
+        x1 = float(
+            np.clip(x1, 0.0, 1.0)
+        )
+
+        y1 = float(
+            np.clip(y1, 0.0, 1.0)
+        )
+
+        x2 = float(
+            np.clip(x2, 0.0, 1.0)
+        )
+
+        y2 = float(
+            np.clip(y2, 0.0, 1.0)
+        )
+
+        if x2 < x1:
+            x1, x2 = x2, x1
+
+        if y2 < y1:
+            y1, y2 = y2, y1
+
+        return torch.tensor(
+            [
+                x1,
+                y1,
+                x2,
+                y2,
+            ],
+            dtype=torch.float32,
+        )
+
+    def extract_phrase(self, text):
+
+        if text is None:
+            return ""
+
+        text = str(text)
+
+        match = re.search(
+            r"<ref>(.*?)</ref>",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            return match.group(1).strip()
+
+        return text.strip()
+
+    def __getitem__(
+        self,
+        index,
+    ):
+
+        row = self.df.iloc[
+            index
+        ]
+
+        patch_id = str(
+            row["patch_id"]
+        )
+
+        source_row_index = int(
+            row["original_row_index"]
+        )
+
+        # ----------------------------------------------------
+        # DOFA features
+        # ----------------------------------------------------
+
+        s1, s2 = (
+            self.dofa_cache.get(
+                patch_id
+            )
+        )
+
+        # ----------------------------------------------------
+        # Text embedding
+        # ----------------------------------------------------
+
+        text_embedding = (
+            self.text_cache.get(
+                source_row_index
+            )
+        )
+
+        # ----------------------------------------------------
+        # Target box
+        # ----------------------------------------------------
+
+        target_box = self.parse_box(
+            row["output"]
+        )
+
+        # ----------------------------------------------------
+        # Metadata
+        # ----------------------------------------------------
+
+        phrase = self.extract_phrase(
+            row["input"]
+        )
+
+        return {
+            "s1": s1.float(),
+            "s2": s2.float(),
+            "text_embedding":
+                text_embedding.float(),
+            "target_box":
+                target_box,
+            "patch_id":
+                patch_id,
+            "row_index":
+                source_row_index,
+            "category":
+                "reference",
+            "phrase":
+                phrase,
+        }
+
+
+# ============================================================
+# COLLATE FUNCTION
+# ============================================================
+
+def collate_reference_batch(
+    batch
+):
+
+    return {
+        "s1": torch.stack(
+            [
+                item["s1"]
+                for item in batch
+            ]
+        ),
+
+        "s2": torch.stack(
+            [
+                item["s2"]
+                for item in batch
+            ]
+        ),
+
+        "text_embedding": torch.stack(
+            [
+                item["text_embedding"]
+                for item in batch
+            ]
+        ),
+
+        "target_box": torch.stack(
+            [
+                item["target_box"]
+                for item in batch
+            ]
+        ),
+
+        "patch_id": [
+            item["patch_id"]
+            for item in batch
+        ],
+
+        "row_index": [
+            item["row_index"]
+            for item in batch
+        ],
+
+        "category": [
+            item["category"]
+            for item in batch
+        ],
+
+        "phrase": [
+            item["phrase"]
+            for item in batch
+        ],
+    }
+
+
+# ============================================================
+# HEATMAP TARGET
+# ============================================================
+
+def create_box_overlap_target(
+    boxes,
+    height=14,
+    width=14,
+):
+
+    batch_size = boxes.shape[0]
+
+    targets = torch.zeros(
+        (
+            batch_size,
+            height,
+            width,
+        ),
+        dtype=torch.float32,
+    )
+
+    cell_w = 1.0 / width
+    cell_h = 1.0 / height
+
+    for b in range(
+        batch_size
+    ):
+
+        x1, y1, x2, y2 = (
+            boxes[b]
+        )
+
+        x1 = float(
+            torch.clamp(
+                x1,
+                0.0,
+                1.0,
+            )
+        )
+
+        y1 = float(
+            torch.clamp(
+                y1,
+                0.0,
+                1.0,
+            )
+        )
+
+        x2 = float(
+            torch.clamp(
+                x2,
+                0.0,
+                1.0,
+            )
+        )
+
+        y2 = float(
+            torch.clamp(
+                y2,
+                0.0,
+                1.0,
+            )
+        )
+
+        if x2 < x1:
+            x1, x2 = x2, x1
+
+        if y2 < y1:
+            y1, y2 = y2, y1
+
+        total = 0.0
+
+        for row in range(
+            height
+        ):
+
+            cy1 = (
+                row
+                *
+                cell_h
+            )
+
+            cy2 = (
+                row + 1
+            ) * cell_h
+
+            iy1 = max(
+                y1,
+                cy1,
+            )
+
+            iy2 = min(
+                y2,
+                cy2,
+            )
+
+            ih = max(
+                0.0,
+                iy2 - iy1,
+            )
+
+            if ih <= 0.0:
+                continue
+
+            for col in range(
+                width
+            ):
+
+                cx1 = (
+                    col
+                    *
+                    cell_w
+                )
+
+                cx2 = (
+                    col + 1
+                ) * cell_w
+
+                ix1 = max(
+                    x1,
+                    cx1,
+                )
+
+                ix2 = min(
+                    x2,
+                    cx2,
+                )
+
+                iw = max(
+                    0.0,
+                    ix2 - ix1,
+                )
+
+                overlap = (
+                    iw * ih
+                )
+
+                if overlap > 0.0:
+
+                    targets[
+                        b,
+                        row,
+                        col,
+                    ] = overlap
+
+                    total += overlap
+
+        if total > 0.0:
+
+            targets[
+                b
+            ] /= total
+
+        else:
+
+            cx = (
+                x1 + x2
+            ) / 2.0
+
+            cy = (
+                y1 + y2
+            ) / 2.0
+
+            col = min(
+                width - 1,
+                max(
+                    0,
+                    int(
+                        cx * width
+                    ),
+                ),
+            )
+
+            row = min(
+                height - 1,
+                max(
+                    0,
+                    int(
+                        cy * height
+                    ),
+                ),
+            )
+
+            targets[
+                b,
+                row,
+                col,
+            ] = 1.0
+
+    return targets
+
+
+# ============================================================
+# HEATMAP LOSS
+# ============================================================
+
+def heatmap_loss(
+    predicted,
+    target,
+):
+
+    predicted = predicted.clamp_min(
+        1e-8
+    )
+
+    target = target.clamp_min(
+        0.0
+    )
+
+    target_sum = target.sum(
+        dim=(1, 2),
+        keepdim=True,
+    )
+
+    target = (
+        target
+        /
+        target_sum.clamp_min(
+            1e-8
+        )
+    )
+
+    loss = -(
+        target
+        *
+        torch.log(
+            predicted
+        )
+    ).sum(
+        dim=(1, 2)
+    )
+
+    return loss.mean()
+
+
+# ============================================================
+# MODEL OUTPUT
+# ============================================================
+
+def extract_heatmap(output):
+
+    if isinstance(
+        output,
+        dict,
+    ):
+
+        if "heatmap" in output:
+            return output[
+                "heatmap"
+            ]
+
+        if "spatial_heatmap" in output:
+            return output[
+                "spatial_heatmap"
+            ]
+
+    if torch.is_tensor(output):
+        return output
+
+    raise RuntimeError(
+        "Model output does not contain a heatmap."
+    )
+
+
+def extract_box(output):
+
+    if not isinstance(
+        output,
+        dict,
+    ):
+        return None
+
+    possible_keys = [
+        "box",
+        "pred_box",
+        "box_pred",
+        "box_logits",
+    ]
+
+    for key in possible_keys:
+
+        if key not in output:
+            continue
+
+        value = output[key]
+
+        if (
+            torch.is_tensor(value)
+            and value.shape[-1] == 4
+        ):
+
+            return value
+
+    return None
+
+
+# ============================================================
+# TRAIN ONE EPOCH
+# ============================================================
+
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    epoch,
+):
+
+    model.train()
+
+    total_loss = 0.0
+    total_hm_loss = 0.0
+    total_box_loss = 0.0
+
+    batches = 0
+
+    for batch_idx, batch in enumerate(
+        loader
+    ):
+
+        s1 = batch[
+            "s1"
+        ].to(
+            DEVICE
+        )
+
+        s2 = batch[
+            "s2"
+        ].to(
+            DEVICE
+        )
+
+        text_embedding = batch[
+            "text_embedding"
+        ].to(
+            DEVICE
+        )
+
+        target_box = batch[
+            "target_box"
+        ].to(
+            DEVICE
+        )
+
+        optimizer.zero_grad()
+
+        output = model(
+            s1=s1,
+            s2=s2,
+            text_embedding=text_embedding,
+        )
+
+        heatmap = extract_heatmap(
+            output
+        )
+
+        if heatmap.dim() == 4:
+            heatmap = heatmap.squeeze(
+                1
+            )
+
+        if heatmap.dim() != 3:
+            raise RuntimeError(
+                f"Unexpected heatmap shape: "
+                f"{heatmap.shape}"
+            )
+
+        target_heatmap = (
+            create_box_overlap_target(
+                target_box,
+                height=heatmap.shape[-2],
+                width=heatmap.shape[-1],
+            )
+            .to(DEVICE)
+        )
+
+        hm_loss = heatmap_loss(
+            heatmap,
+            target_heatmap,
+        )
+
+        aux_box = extract_box(
+            output
+        )
+
+        if aux_box is not None:
+
+            aux_box = torch.clamp(
+                aux_box,
+                0.0,
+                1.0,
+            )
+
+            box_loss = F.smooth_l1_loss(
+                aux_box,
+                target_box,
+            )
+
+        else:
+
+            box_loss = torch.tensor(
+                0.0,
+                device=DEVICE,
+            )
+
+        loss = (
+            HEATMAP_WEIGHT
+            *
+            hm_loss
+            +
+            BOX_WEIGHT
+            *
+            box_loss
+        )
+
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_norm=1.0,
+        )
+
+        optimizer.step()
+
+        total_loss += float(
+            loss.item()
+        )
+
+        total_hm_loss += float(
+            hm_loss.item()
+        )
+
+        total_box_loss += float(
+            box_loss.item()
+        )
+
+        batches += 1
+
+        if (
+            batch_idx + 1
+        ) % 50 == 0:
+
+            print(
+                f"  Epoch {epoch:02d} | "
+                f"Batch {batch_idx + 1:04d}/"
+                f"{len(loader):04d} | "
+                f"Loss {loss.item():.4f}"
+            )
+
+    return {
+        "loss":
+            total_loss / max(
+                1,
+                batches,
+            ),
+
+        "heatmap_loss":
+            total_hm_loss / max(
+                1,
+                batches,
+            ),
+
+        "box_loss":
+            total_box_loss / max(
+                1,
+                batches,
+            ),
+    }
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+def evaluate(
+    model,
+    loader,
+):
+
+    model.eval()
+
+    ious = []
+
+    records = []
+
+    with torch.no_grad():
+
+        for batch in loader:
+
+            s1 = batch[
+                "s1"
+            ].to(
+                DEVICE
+            )
+
+            s2 = batch[
+                "s2"
+            ].to(
+                DEVICE
+            )
+
+            text_embedding = batch[
+                "text_embedding"
+            ].to(
+                DEVICE
+            )
+
+            target_boxes = batch[
+                "target_box"
+            ]
+
+            output = model(
+                s1=s1,
+                s2=s2,
+                text_embedding=text_embedding,
+            )
+
+            heatmaps = extract_heatmap(
+                output
+            )
+
+            if heatmaps.dim() == 4:
+                heatmaps = heatmaps.squeeze(
+                    1
+                )
+
+            for i in range(
+                heatmaps.shape[0]
+            ):
+
+                prediction = (
+                    heatmap_to_box(
+                        heatmaps[i]
+                        .detach()
+                        .cpu()
+                        .numpy()
+                    )
+                )
+
+                target = (
+                    target_boxes[i]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(
+                        np.float64
+                    )
+                    .tolist()
+                )
+
+                iou = box_iou(
+                    prediction,
+                    target,
+                )
+
+                ious.append(
+                    iou
+                )
+
+                records.append(
+                    {
+                        "row_index":
+                            batch["row_index"][i],
+
+                        "patch_id":
+                            batch["patch_id"][i],
+
+                        "phrase":
+                            batch["phrase"][i],
+
+                        "prediction":
+                            prediction,
+
+                        "target":
+                            target,
+
+                        "iou":
+                            iou,
+                    }
+                )
+
+    ious = np.asarray(
+        ious,
+        dtype=np.float64,
+    )
+
+    return {
+        "mean_iou":
+            float(
+                ious.mean()
+            ),
+
+        "median_iou":
+            float(
+                np.median(ious)
+            ),
+
+        "iou_50":
+            float(
+                (ious >= 0.50).mean()
+            ),
+
+        "iou_25":
+            float(
+                (ious >= 0.25).mean()
+            ),
+
+        "ious":
+            ious,
+
+        "records":
+            records,
+    }
+
+
+# ============================================================
+# PER-PHRASE STATISTICS
+# ============================================================
+
+def calculate_phrase_statistics(
+    records
+):
+
+    grouped = {}
+
+    for record in records:
+
+        phrase = record[
+            "phrase"
+        ]
+
+        if phrase not in grouped:
+            grouped[phrase] = []
+
+        grouped[phrase].append(
+            record["iou"]
+        )
+
+    results = []
+
+    for phrase, values in grouped.items():
+
+        values = np.asarray(
+            values,
+            dtype=np.float64,
+        )
+
+        results.append(
+            {
+                "phrase":
+                    phrase,
+
+                "count":
+                    len(values),
+
+                "mean_iou":
+                    float(
+                        values.mean()
+                    ),
+
+                "median_iou":
+                    float(
+                        np.median(values)
+                    ),
+
+                "iou_50":
+                    float(
+                        (
+                            values
+                            >= 0.50
+                        ).mean()
+                    ),
+
+                "iou_25":
+                    float(
+                        (
+                            values
+                            >= 0.25
+                        ).mean()
+                    ),
+            }
+        )
+
+    return pd.DataFrame(
+        results
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print("=" * 70)
+    print(
+        "LARGE PATCH-DISJOINT "
+        "REFERENCE GROUNDING TRAINING"
+    )
+    print("=" * 70)
+
+    print(
+        f"\nDevice: {DEVICE}"
+    )
+
+    print(
+        f"Epochs: {NUM_EPOCHS}"
+    )
+
+    print(
+        f"Batch size: {BATCH_SIZE}"
+    )
+
+    print(
+        f"Learning rate: {LEARNING_RATE}"
+    )
+
+    print(
+        f"Boundary quantiles: "
+        f"{QUANTILE_LOW:.2f}-"
+        f"{QUANTILE_HIGH:.2f}"
+    )
+
+    # ========================================================
+    # CACHE LOAD
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("LOADING DOFA CACHE")
+    print("=" * 70)
+
+    dofa_cache = DofaShardCache(
+        DOFA_ROOT
+    )
+
+    print("\n" + "=" * 70)
+    print("LOADING TEXT EMBEDDING CACHE")
+    print("=" * 70)
+
+    text_cache = GroundingTextCache(
+        TEXT_CACHE_DIR
+    )
+
+    # ========================================================
+    # DATASETS
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("LOADING DATASETS")
+    print("=" * 70)
+
+    train_dataset = (
+        ReferenceGroundingDataset(
+            TRAIN_PARQUET,
+            dofa_cache,
+            text_cache,
+        )
+    )
+
+    val_dataset = (
+        ReferenceGroundingDataset(
+            VAL_PARQUET,
+            dofa_cache,
+            text_cache,
+        )
+    )
+
+    # ========================================================
+    # PATCH ISOLATION
+    # ========================================================
+
+    train_patches = set(
+        train_dataset.df[
+            "patch_id"
+        ]
+        .astype(str)
+    )
+
+    val_patches = set(
+        val_dataset.df[
+            "patch_id"
+        ]
+        .astype(str)
+    )
+
+    overlap = (
+        train_patches
+        &
+        val_patches
+    )
+
+    print("\n" + "=" * 70)
+    print("PATCH ISOLATION CHECK")
+    print("=" * 70)
+
+    print(
+        f"Training patches: "
+        f"{len(train_patches):,}"
+    )
+
+    print(
+        f"Validation patches: "
+        f"{len(val_patches):,}"
+    )
+
+    print(
+        f"Overlap: "
+        f"{len(overlap):,}"
+    )
+
+    if overlap:
+
+        raise RuntimeError(
+            "Patch overlap detected. "
+            "Training aborted."
+        )
+
+    print(
+        "Patch-disjoint validation confirmed."
+    )
+
+    # ========================================================
+    # ROW COUNTS
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("DATASET SIZES")
+    print("=" * 70)
+
+    print(
+        f"Training rows: "
+        f"{len(train_dataset):,}"
+    )
+
+    print(
+        f"Validation rows: "
+        f"{len(val_dataset):,}"
+    )
+
+    # ========================================================
+    # DATA LOADERS
+    # ========================================================
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        collate_fn=collate_reference_batch,
+        pin_memory=False,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        collate_fn=collate_reference_batch,
+        pin_memory=False,
+    )
+
+    print(
+        f"\nTraining batches: "
+        f"{len(train_loader):,}"
+    )
+
+    print(
+        f"Validation batches: "
+        f"{len(val_loader):,}"
+    )
+
+    # ========================================================
+    # DATA SMOKE TEST
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("DATA SMOKE TEST")
+    print("=" * 70)
+
+    sample_batch = next(
+        iter(train_loader)
+    )
+
+    print(
+        f"S1 shape: "
+        f"{tuple(sample_batch['s1'].shape)}"
+    )
+
+    print(
+        f"S2 shape: "
+        f"{tuple(sample_batch['s2'].shape)}"
+    )
+
+    print(
+        f"Text shape: "
+        f"{tuple(sample_batch['text_embedding'].shape)}"
+    )
+
+    print(
+        f"Target shape: "
+        f"{tuple(sample_batch['target_box'].shape)}"
+    )
+
+    print(
+        f"First patch: "
+        f"{sample_batch['patch_id'][0]}"
+    )
+
+    print(
+        f"First phrase: "
+        f"{sample_batch['phrase'][0]}"
+    )
+
+    # ========================================================
+    # MODEL
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("INITIALIZING MODEL")
+    print("=" * 70)
+
+    model = GroundingHeatmapModel()
+
+    model.to(
+        DEVICE
+    )
+
+    trainable_params = sum(
+        parameter.numel()
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    )
+
+    print(
+        f"Trainable parameters: "
+        f"{trainable_params:,}"
+    )
+
+    # ========================================================
+    # OPTIMIZER
+    # ========================================================
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+    )
+
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=NUM_EPOCHS,
+        )
+    )
+
+    os.makedirs(
+        CHECKPOINT_DIR,
+        exist_ok=True,
+    )
+
+    # ========================================================
+    # TRAINING
+    # ========================================================
+
+    best_iou = -float("inf")
+
+    history = []
+
+    print("\n" + "=" * 70)
+    print("TRAINING")
+    print("=" * 70)
+
+    for epoch in range(
+        1,
+        NUM_EPOCHS + 1,
+    ):
+
+        train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            epoch,
+        )
+
+        val_metrics = evaluate(
+            model,
+            val_loader,
+        )
+
+        scheduler.step()
+
+        lr = (
+            optimizer.param_groups[
+                0
+            ]["lr"]
+        )
+
+        history.append(
+            {
+                "epoch":
+                    epoch,
+
+                "train_loss":
+                    train_metrics[
+                        "loss"
+                    ],
+
+                "heatmap_loss":
+                    train_metrics[
+                        "heatmap_loss"
+                    ],
+
+                "box_loss":
+                    train_metrics[
+                        "box_loss"
+                    ],
+
+                "val_mean_iou":
+                    val_metrics[
+                        "mean_iou"
+                    ],
+
+                "val_median_iou":
+                    val_metrics[
+                        "median_iou"
+                    ],
+
+                "val_iou_50":
+                    val_metrics[
+                        "iou_50"
+                    ],
+
+                "val_iou_25":
+                    val_metrics[
+                        "iou_25"
+                    ],
+
+                "learning_rate":
+                    lr,
+            }
+        )
+
+        print("\n" + "-" * 70)
+
+        print(
+            f"Epoch {epoch:02d}/"
+            f"{NUM_EPOCHS}"
+        )
+
+        print(
+            f"Train Loss: "
+            f"{train_metrics['loss']:.5f}"
+        )
+
+        print(
+            f"Heatmap Loss: "
+            f"{train_metrics['heatmap_loss']:.5f}"
+        )
+
+        print(
+            f"Box Loss: "
+            f"{train_metrics['box_loss']:.5f}"
+        )
+
+        print(
+            f"Validation Mean IoU: "
+            f"{val_metrics['mean_iou']:.6f}"
+        )
+
+        print(
+            f"Validation Median IoU: "
+            f"{val_metrics['median_iou']:.6f}"
+        )
+
+        print(
+            f"Validation IoU >= 0.50: "
+            f"{100.0 * val_metrics['iou_50']:.2f}%"
+        )
+
+        print(
+            f"Validation IoU >= 0.25: "
+            f"{100.0 * val_metrics['iou_25']:.2f}%"
+        )
+
+        print(
+            f"Learning rate: "
+            f"{lr:.8f}"
+        )
+
+        print("-" * 70)
+
+        # ----------------------------------------------------
+        # Save latest
+        # ----------------------------------------------------
+
+        torch.save(
+            {
+                "epoch":
+                    epoch,
+
+                "model_state_dict":
+                    model.state_dict(),
+
+                "optimizer_state_dict":
+                    optimizer.state_dict(),
+
+                "scheduler_state_dict":
+                    scheduler.state_dict(),
+
+                "val_mean_iou":
+                    val_metrics[
+                        "mean_iou"
+                    ],
+
+                "config":
+                    {
+                        "seed":
+                            SEED,
+
+                        "batch_size":
+                            BATCH_SIZE,
+
+                        "epochs":
+                            NUM_EPOCHS,
+
+                        "learning_rate":
+                            LEARNING_RATE,
+
+                        "weight_decay":
+                            WEIGHT_DECAY,
+
+                        "quantile_low":
+                            QUANTILE_LOW,
+
+                        "quantile_high":
+                            QUANTILE_HIGH,
+                    },
+            },
+            LAST_CHECKPOINT,
+        )
+
+        # ----------------------------------------------------
+        # Save best
+        # ----------------------------------------------------
+
+        if (
+            val_metrics[
+                "mean_iou"
+            ]
+            >
+            best_iou
+        ):
+
+            best_iou = (
+                val_metrics[
+                    "mean_iou"
+                ]
+            )
+
+            torch.save(
+                {
+                    "epoch":
+                        epoch,
+
+                    "model_state_dict":
+                        model.state_dict(),
+
+                    "optimizer_state_dict":
+                        optimizer.state_dict(),
+
+                    "scheduler_state_dict":
+                        scheduler.state_dict(),
+
+                    "val_mean_iou":
+                        best_iou,
+
+                    "config":
+                        {
+                            "seed":
+                                SEED,
+
+                            "batch_size":
+                                BATCH_SIZE,
+
+                            "epochs":
+                                NUM_EPOCHS,
+
+                            "learning_rate":
+                                LEARNING_RATE,
+
+                            "weight_decay":
+                                WEIGHT_DECAY,
+
+                            "quantile_low":
+                                QUANTILE_LOW,
+
+                            "quantile_high":
+                                QUANTILE_HIGH,
+                        },
+                },
+                BEST_CHECKPOINT,
+            )
+
+            print(
+                "\nNEW BEST CHECKPOINT."
+            )
+
+            print(
+                f"Best validation IoU: "
+                f"{best_iou:.6f}"
+            )
+
+    # ========================================================
+    # SAVE HISTORY
+    # ========================================================
+
+    history_df = pd.DataFrame(
+        history
+    )
+
+    history_df.to_csv(
+        HISTORY_PATH,
+        index=False,
+    )
+
+    # ========================================================
+    # LOAD BEST MODEL FOR FINAL ANALYSIS
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("FINAL BEST-CHECKPOINT ANALYSIS")
+    print("=" * 70)
+
+    best_checkpoint = torch.load(
+        BEST_CHECKPOINT,
+        map_location=DEVICE,
+    )
+
+    model.load_state_dict(
+        best_checkpoint[
+            "model_state_dict"
+        ]
+    )
+
+    best_metrics = evaluate(
+        model,
+        val_loader,
+    )
+
+    phrase_stats = (
+        calculate_phrase_statistics(
+            best_metrics[
+                "records"
+            ]
+        )
+    )
+
+    phrase_stats_path = os.path.join(
+        CHECKPOINT_DIR,
+        "validation_per_phrase.csv",
+    )
+
+    phrase_stats = (
+        phrase_stats
+        .sort_values(
+            "mean_iou"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    phrase_stats.to_csv(
+        phrase_stats_path,
+        index=False,
+    )
+
+    # ========================================================
+    # CATEGORY-LIKE SUMMARY
+    #
+    # All examples are reference examples,
+    # so we summarize by phrase frequency bins.
+    # ========================================================
+
+    print(
+        f"\nBest validation Mean IoU: "
+        f"{best_metrics['mean_iou']:.6f}"
+    )
+
+    print(
+        f"Best validation Median IoU: "
+        f"{best_metrics['median_iou']:.6f}"
+    )
+
+    print(
+        f"Validation IoU >= 0.50: "
+        f"{100.0 * best_metrics['iou_50']:.2f}%"
+    )
+
+    print(
+        f"Validation IoU >= 0.25: "
+        f"{100.0 * best_metrics['iou_25']:.2f}%"
+    )
+
+    # --------------------------------------------------------
+    # Worst/best phrases
+    # --------------------------------------------------------
+
+    if len(phrase_stats) > 0:
+
+        print(
+            "\nWorst 10 validation phrases:"
+        )
+
+        for _, row in phrase_stats.head(
+            10
+        ).iterrows():
+
+            print(
+                f"  n={int(row['count']):3d} "
+                f"IoU={row['mean_iou']:.4f} "
+                f"{row['phrase']}"
+            )
+
+        print(
+            "\nBest 10 validation phrases:"
+        )
+
+        for _, row in phrase_stats.tail(
+            10
+        ).sort_values(
+            "mean_iou",
+            ascending=False,
+        ).iterrows():
+
+            print(
+                f"  n={int(row['count']):3d} "
+                f"IoU={row['mean_iou']:.4f} "
+                f"{row['phrase']}"
+            )
+
+    # ========================================================
+    # FINAL OUTPUT
+    # ========================================================
+
+    print("\n" + "=" * 70)
+    print("TRAINING COMPLETE")
+    print("=" * 70)
+
+    print(
+        f"\nBest checkpoint:"
+        f"\n{BEST_CHECKPOINT}"
+    )
+
+    print(
+        f"\nLatest checkpoint:"
+        f"\n{LAST_CHECKPOINT}"
+    )
+
+    print(
+        f"\nTraining history:"
+        f"\n{HISTORY_PATH}"
+    )
+
+    print(
+        f"\nPer-phrase validation statistics:"
+        f"\n{phrase_stats_path}"
+    )
+
+    print(
+        "\nArchitecture unchanged."
+    )
+
+    print(
+        "Training/validation split is patch-disjoint."
+    )
+
+    print(
+        f"Final boundary extraction: "
+        f"{QUANTILE_LOW:.2f}-"
+        f"{QUANTILE_HIGH:.2f}"
+    )
+
+    print(
+        "\nTEST COMPLETE"
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    main()
+
+====================================================================================================
+FILE: D:\SatQueryAI\src\models\diagnose_c1.py
+====================================================================================================
+import os
+import sys
+import json
+import math
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+
+
+# ============================================================
+# PROJECT ROOT
+# ============================================================
+
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+VAL_PARQUET = (
+    r"D:\SatQueryAI\data\processed"
+    r"\reference_grounding_split"
+    r"\reference_val.parquet"
+)
+
+DOFA_ROOT = (
+    r"D:\SatQueryAI\data\processed"
+    r"\dofa_features_download"
+    r"\dofa_features"
+)
+
+TEXT_CACHE_DIR = (
+    r"D:\SatQueryAI\data\processed"
+    r"\grounding_text_embeddings"
+    r"\grounding_text_embedding_shards"
+)
+
+CHECKPOINT = (
+    r"D:\SatQueryAI\models\checkpoints"
+    r"\c1_high_resolution"
+    r"\best.pt"
+)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+BATCH_SIZE = 32
+NUM_WORKERS = 0
+
+DEVICE = torch.device("cpu")
+
+print("=" * 80)
+print("C1 CHECKPOINT DIAGNOSTIC")
+print("=" * 80)
+print("Device:", DEVICE)
+print()
+
+
+# ============================================================
+# IOU
+# ============================================================
+
+def box_iou(boxes1, boxes2, eps=1e-6):
+
+    x1 = torch.maximum(
+        boxes1[:, 0],
+        boxes2[:, 0]
+    )
+
+    y1 = torch.maximum(
+        boxes1[:, 1],
+        boxes2[:, 1]
+    )
+
+    x2 = torch.minimum(
+        boxes1[:, 2],
+        boxes2[:, 2]
+    )
+
+    y2 = torch.minimum(
+        boxes1[:, 3],
+        boxes2[:, 3]
+    )
+
+    inter_w = (
+        x2 - x1
+    ).clamp(min=0.0)
+
+    inter_h = (
+        y2 - y1
+    ).clamp(min=0.0)
+
+    intersection = (
+        inter_w * inter_h
+    )
+
+    area1 = (
+        (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0.0)
+        *
+        (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0.0)
+    )
+
+    area2 = (
+        (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0.0)
+        *
+        (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0.0)
+    )
+
+    union = (
+        area1
+        + area2
+        - intersection
+    )
+
+    return intersection / (union + eps)
+
+
+# ============================================================
+# BOX -> 56x56 TARGET HEATMAP
+# ============================================================
+
+def create_heatmap_target(
+    target_boxes,
+    grid_size=56
+):
+
+    device = target_boxes.device
+    dtype = target_boxes.dtype
+
+    B = target_boxes.size(0)
+
+    edges = torch.linspace(
+        0.0,
+        1.0,
+        grid_size + 1,
+        device=device,
+        dtype=dtype
+    )
+
+    x_left = edges[:-1].view(
+        1,
+        1,
+        grid_size
+    )
+
+    x_right = edges[1:].view(
+        1,
+        1,
+        grid_size
+    )
+
+    y_top = edges[:-1].view(
+        1,
+        grid_size,
+        1
+    )
+
+    y_bottom = edges[1:].view(
+        1,
+        grid_size,
+        1
+    )
+
+    x1 = target_boxes[:, 0].view(
+        B,
+        1,
+        1
+    )
+
+    y1 = target_boxes[:, 1].view(
+        B,
+        1,
+        1
+    )
+
+    x2 = target_boxes[:, 2].view(
+        B,
+        1,
+        1
+    )
+
+    y2 = target_boxes[:, 3].view(
+        B,
+        1,
+        1
+    )
+
+    inter_w = (
+        torch.minimum(x_right, x2)
+        -
+        torch.maximum(x_left, x1)
+    ).clamp_min(0.0)
+
+    inter_h = (
+        torch.minimum(y_bottom, y2)
+        -
+        torch.maximum(y_top, y1)
+    ).clamp_min(0.0)
+
+    area = inter_w * inter_h
+
+    cell_area = 1.0 / (
+        grid_size * grid_size
+    )
+
+    heatmap = (
+        area / cell_area
+    ).clamp(
+        min=0.0,
+        max=1.0
+    )
+
+    return heatmap
+
+
+# ============================================================
+# C1 MODEL — EXACT KAGGLE ARCHITECTURE
+# ============================================================
+
+class GroundingHeatmapModel(nn.Module):
+
+    def __init__(
+        self,
+        input_dim=768,
+        hidden_dim=256,
+        grid_size=14
+    ):
+
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.grid_size = grid_size
+
+        self.highres_grid_size = 56
+
+        # ----------------------------------------------------
+        # VISUAL FUSION
+        # ----------------------------------------------------
+
+        self.visual_fusion = nn.Sequential(
+            nn.Linear(
+                input_dim * 2,
+                hidden_dim
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            )
+        )
+
+        # ----------------------------------------------------
+        # SPATIAL POSITION
+        # ----------------------------------------------------
+
+        self.spatial_pos = nn.Parameter(
+            torch.zeros(
+                1,
+                grid_size * grid_size,
+                hidden_dim
+            )
+        )
+
+        nn.init.normal_(
+            self.spatial_pos,
+            std=0.02
+        )
+
+        # ----------------------------------------------------
+        # HIGH RESOLUTION DECODER
+        #
+        # 14x14 -> 28x28 -> 56x56
+        # ----------------------------------------------------
+
+        self.highres1 = nn.Sequential(
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.GELU(),
+            nn.GroupNorm(
+                32,
+                hidden_dim
+            )
+        )
+
+        self.highres2 = nn.Sequential(
+            nn.Conv2d(
+                hidden_dim,
+                hidden_dim,
+                kernel_size=3,
+                padding=1
+            ),
+            nn.GELU(),
+            nn.GroupNorm(
+                32,
+                hidden_dim
+            )
+        )
+
+        # ----------------------------------------------------
+        # QUERY PROJECTION
+        # ----------------------------------------------------
+
+        self.query_proj = nn.Sequential(
+            nn.Linear(
+                input_dim,
+                hidden_dim
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            )
+        )
+
+        # ----------------------------------------------------
+        # VISUAL / QUERY MATCHING
+        # ----------------------------------------------------
+
+        self.visual_match = nn.Linear(
+            hidden_dim,
+            hidden_dim
+        )
+
+        self.query_match = nn.Linear(
+            hidden_dim,
+            hidden_dim
+        )
+
+        self.match_norm = nn.LayerNorm(
+            hidden_dim
+        )
+
+        self.match_head = nn.Sequential(
+            nn.Linear(
+                hidden_dim,
+                128
+            ),
+            nn.GELU(),
+            nn.Linear(
+                128,
+                1
+            )
+        )
+
+        # ----------------------------------------------------
+        # SPATIAL SUMMARY
+        # ----------------------------------------------------
+
+        self.spatial_summary = nn.Sequential(
+            nn.Linear(
+                hidden_dim,
+                hidden_dim
+            ),
+            nn.GELU(),
+            nn.LayerNorm(
+                hidden_dim
+            )
+        )
+
+        # ----------------------------------------------------
+        # CORRECTION HEAD
+        #
+        # spatial_context = 256
+        # query          = 256
+        # geometry       = 8
+        #
+        # total = 520
+        # ----------------------------------------------------
+
+        self.correction_head = nn.Sequential(
+            nn.Linear(
+                hidden_dim * 2 + 8,
+                256
+            ),
+            nn.GELU(),
+            nn.Linear(
+                256,
+                128
+            ),
+            nn.GELU(),
+            nn.Linear(
+                128,
+                4
+            )
+        )
+
+
+    # ========================================================
+    # SPATIAL GEOMETRY
+    # ========================================================
+
+    def extract_spatial_geometry(
+        self,
+        heatmap
+    ):
+
+        B, H, W = heatmap.shape
+
+        device = heatmap.device
+        dtype = heatmap.dtype
+
+        xs = (
+            torch.arange(
+                W,
+                device=device,
+                dtype=dtype
+            )
+            + 0.5
+        ) / W
+
+        ys = (
+            torch.arange(
+                H,
+                device=device,
+                dtype=dtype
+            )
+            + 0.5
+        ) / H
+
+        yy, xx = torch.meshgrid(
+            ys,
+            xs,
+            indexing="ij"
+        )
+
+        xx = xx.reshape(
+            1,
+            -1
+        )
+
+        yy = yy.reshape(
+            1,
+            -1
+        )
+
+        p = heatmap.reshape(
+            B,
+            -1
+        )
+
+        # ----------------------------------------------------
+        # CENTER
+        # ----------------------------------------------------
+
+        cx = (
+            p * xx
+        ).sum(
+            dim=1
+        )
+
+        cy = (
+            p * yy
+        ).sum(
+            dim=1
+        )
+
+        # ----------------------------------------------------
+        # VARIANCE
+        # ----------------------------------------------------
+
+        var_x = (
+            p
+            *
+            (
+                xx
+                -
+                cx.unsqueeze(1)
+            ).pow(2)
+        ).sum(
+            dim=1
+        )
+
+        var_y = (
+            p
+            *
+            (
+                yy
+                -
+                cy.unsqueeze(1)
+            ).pow(2)
+        ).sum(
+            dim=1
+        )
+
+        std_x = torch.sqrt(
+            var_x + 1e-8
+        )
+
+        std_y = torch.sqrt(
+            var_y + 1e-8
+        )
+
+        # ----------------------------------------------------
+        # WIDTH / HEIGHT
+        #
+        # std = width / sqrt(12)
+        # ----------------------------------------------------
+
+        width = (
+            std_x
+            *
+            math.sqrt(12.0)
+        ).clamp(
+            min=0.02,
+            max=1.0
+        )
+
+        height = (
+            std_y
+            *
+            math.sqrt(12.0)
+        ).clamp(
+            min=0.02,
+            max=1.0
+        )
+
+        # ----------------------------------------------------
+        # BASE BOX
+        # ----------------------------------------------------
+
+        x1 = (
+            cx
+            -
+            width / 2.0
+        ).clamp(
+            0.0,
+            1.0
+        )
+
+        y1 = (
+            cy
+            -
+            height / 2.0
+        ).clamp(
+            0.0,
+            1.0
+        )
+
+        x2 = (
+            cx
+            +
+            width / 2.0
+        ).clamp(
+            0.0,
+            1.0
+        )
+
+        y2 = (
+            cy
+            +
+            height / 2.0
+        ).clamp(
+            0.0,
+            1.0
+        )
+
+        geometry = torch.stack(
+            [
+                cx,
+                cy,
+                std_x,
+                std_y,
+                x1,
+                y1,
+                x2,
+                y2
+            ],
+            dim=1
+        )
+
+        base_box = geometry[
+            :,
+            4:8
+        ]
+
+        return geometry, base_box
+
+
+    # ========================================================
+    # FORWARD
+    # ========================================================
+
+    def forward(
+        self,
+        s1,
+        s2,
+        text_embedding
+    ):
+
+        B = s1.size(0)
+
+        # ----------------------------------------------------
+        # 1. FUSE S1 + S2
+        # ----------------------------------------------------
+
+        visual = torch.cat(
+            [
+                s1,
+                s2
+            ],
+            dim=-1
+        )
+
+        visual = self.visual_fusion(
+            visual
+        )
+
+        # ----------------------------------------------------
+        # 2. ADD SPATIAL POSITION
+        # ----------------------------------------------------
+
+        visual = (
+            visual
+            +
+            self.spatial_pos
+        )
+
+        # ----------------------------------------------------
+        # 3. CONVERT 14x14 TOKENS TO FEATURE MAP
+        # ----------------------------------------------------
+
+        feature_map = visual.transpose(
+            1,
+            2
+        ).reshape(
+            B,
+            self.hidden_dim,
+            self.grid_size,
+            self.grid_size
+        )
+
+        # ----------------------------------------------------
+        # 4. 14 -> 28
+        # ----------------------------------------------------
+
+        feature_map = F.interpolate(
+            feature_map,
+            size=(28, 28),
+            mode="bilinear",
+            align_corners=False
+        )
+
+        feature_map = self.highres1(
+            feature_map
+        )
+
+        # ----------------------------------------------------
+        # 5. 28 -> 56
+        # ----------------------------------------------------
+
+        feature_map = F.interpolate(
+            feature_map,
+            size=(56, 56),
+            mode="bilinear",
+            align_corners=False
+        )
+
+        feature_map = self.highres2(
+            feature_map
+        )
+
+        # ----------------------------------------------------
+        # 6. BACK TO 56x56 TOKENS
+        # ----------------------------------------------------
+
+        visual_tokens = (
+            feature_map
+            .flatten(2)
+            .transpose(1, 2)
+        )
+
+        # [B,3136,256]
+
+        # ----------------------------------------------------
+        # 7. QUERY
+        # ----------------------------------------------------
+
+        query = self.query_proj(
+            text_embedding
+        )
+
+        # [B,256]
+
+        # ----------------------------------------------------
+        # 8. QUERY-CONDITIONED MATCHING
+        # ----------------------------------------------------
+
+        v = self.visual_match(
+            visual_tokens
+        )
+
+        q = self.query_match(
+            query
+        ).unsqueeze(1)
+
+        matched = self.match_norm(
+            F.gelu(
+                v + q
+            )
+        )
+
+        logits = self.match_head(
+            matched
+        ).squeeze(-1)
+
+        # ----------------------------------------------------
+        # 9. 56x56 HEATMAP
+        # ----------------------------------------------------
+
+        heatmap_logits = logits.reshape(
+            B,
+            56,
+            56
+        )
+
+        heatmap = F.softmax(
+            heatmap_logits.reshape(
+                B,
+                -1
+            ),
+            dim=-1
+        ).reshape(
+            B,
+            56,
+            56
+        )
+
+        # ----------------------------------------------------
+        # 10. SPATIAL CONTEXT
+        # ----------------------------------------------------
+
+        spatial_context = (
+            visual_tokens
+            *
+            heatmap.reshape(
+                B,
+                -1,
+                1
+            )
+        ).sum(
+            dim=1
+        )
+
+        spatial_context = self.spatial_summary(
+            spatial_context
+        )
+
+        # ----------------------------------------------------
+        # 11. HEATMAP -> GEOMETRY
+        # ----------------------------------------------------
+
+        geometry, base_box = (
+            self.extract_spatial_geometry(
+                heatmap
+            )
+        )
+
+        # ----------------------------------------------------
+        # 12. CORRECTION
+        # ----------------------------------------------------
+
+        correction_input = torch.cat(
+            [
+                spatial_context,
+                query,
+                geometry
+            ],
+            dim=1
+        )
+
+        correction = (
+            torch.tanh(
+                self.correction_head(
+                    correction_input
+                )
+            )
+            *
+            0.2
+        )
+
+        # ----------------------------------------------------
+        # 13. FINAL BOX
+        # ----------------------------------------------------
+
+        box = (
+            base_box
+            +
+            correction
+        )
+
+        x1 = torch.minimum(
+            box[:, 0],
+            box[:, 2]
+        )
+
+        y1 = torch.minimum(
+            box[:, 1],
+            box[:, 3]
+        )
+
+        x2 = torch.maximum(
+            box[:, 0],
+            box[:, 2]
+        )
+
+        y2 = torch.maximum(
+            box[:, 1],
+            box[:, 3]
+        )
+
+        box = torch.stack(
+            [
+                x1,
+                y1,
+                x2,
+                y2
+            ],
+            dim=1
+        ).clamp(
+            0.0,
+            1.0
+        )
+
+        return {
+            "heatmap_logits": heatmap_logits,
+            "heatmap": heatmap,
+            "geometry": geometry,
+            "base_box": base_box,
+            "correction": correction,
+            "box": box
+        }
+
+
+# ============================================================
+# DATASET
+# ============================================================
+
+class GroundingDataset(Dataset):
+
+    def __init__(
+        self,
+        annotation_file,
+        dofa_dir,
+        text_cache_dir
+    ):
+
+        print("Loading annotations...")
+
+        df = pd.read_parquet(
+            annotation_file
+        )
+
+        df = df[
+            df["type"] == "bounding box"
+        ].copy()
+
+        self.df = df.reset_index(
+            drop=True
+        )
+
+        print(
+            "Grounding rows:",
+            f"{len(self.df):,}"
+        )
+
+        # ----------------------------------------------------
+        # DOFA INDEX
+        # ----------------------------------------------------
+
+        print("Indexing DOFA shards...")
+
+        self.patch_index = {}
+
+        dofa_shards = sorted(
+            os.path.join(
+                dofa_dir,
+                x
+            )
+            for x in os.listdir(
+                dofa_dir
+            )
+            if x.endswith(".pt")
+        )
+
+        print(
+            "DOFA shards:",
+            len(dofa_shards)
+        )
+
+        self.dofa_shards = {}
+
+        for shard_id, path in enumerate(
+            dofa_shards
+        ):
+
+            data = torch.load(
+                path,
+                map_location="cpu",
+                weights_only=False
+            )
+
+            self.dofa_shards[shard_id] = data
+
+            for local_idx, patch_id in enumerate(
+                data["patch_ids"]
+            ):
+
+                patch_id = str(
+                    patch_id
+                )
+
+                self.patch_index[
+                    patch_id
+                ] = (
+                    shard_id,
+                    local_idx
+                )
+
+        print(
+            "Indexed patches:",
+            f"{len(self.patch_index):,}"
+        )
+
+        # ----------------------------------------------------
+        # TEXT CACHE
+        # ----------------------------------------------------
+
+        print("Indexing text shards...")
+
+        self.text_shards = sorted(
+            os.path.join(
+                text_cache_dir,
+                x
+            )
+            for x in os.listdir(
+                text_cache_dir
+            )
+            if x.startswith(
+                "grounding_text_shard_"
+            )
+            and x.endswith(".pt")
+        )
+
+        print(
+            "Text shards:",
+            len(self.text_shards)
+        )
+
+        self.text_ranges = []
+
+        start = 0
+
+        for path in self.text_shards:
+
+            data = torch.load(
+                path,
+                map_location="cpu",
+                weights_only=False
+            )
+
+            size = len(
+                data["patch_ids"]
+            )
+
+            self.text_ranges.append(
+                (
+                    start,
+                    start + size,
+                    path
+                )
+            )
+
+            start += size
+
+        if start != len(self.df):
+
+            raise RuntimeError(
+                f"Text cache rows {start} "
+                f"!= dataframe rows {len(self.df)}"
+            )
+
+        print("Dataset ready.")
+
+
+    def __len__(self):
+
+        return len(
+            self.df
+        )
+
+
+    def find_text_shard(
+        self,
+        idx
+    ):
+
+        for start, end, path in self.text_ranges:
+
+            if start <= idx < end:
+
+                return (
+                    path,
+                    idx - start
+                )
+
+        raise IndexError(
+            idx
+        )
+
+
+    def __getitem__(
+        self,
+        idx
+    ):
+
+        row = self.df.iloc[
+            idx
+        ]
+
+        patch_id = str(
+            row["patch_id"]
+        )
+
+        shard_id, local_idx = (
+            self.patch_index[
+                patch_id
+            ]
+        )
+
+        dofa = self.dofa_shards[
+            shard_id
+        ]
+
+        s1 = dofa["s1"][
+            local_idx
+        ].float()
+
+        s2 = dofa["s2"][
+            local_idx
+        ].float()
+
+        # ----------------------------------------------------
+        # TEXT
+        # ----------------------------------------------------
+
+        text_path, text_idx = (
+            self.find_text_shard(
+                idx
+            )
+        )
+
+        text_data = torch.load(
+            text_path,
+            map_location="cpu",
+            weights_only=False
+        )
+
+        text_embedding = (
+            text_data[
+                "text_embeddings"
+            ][
+                text_idx
+            ].float()
+        )
+
+        target_box = torch.tensor(
+            [
+                float(x)
+                for x in str(
+                    row["output"]
+                )
+                .replace(
+                    "[",
+                    ""
+                )
+                .replace(
+                    "]",
+                    ""
+                )
+                .split()
+            ],
+            dtype=torch.float32
+        )
+
+        return {
+            "s1": s1,
+            "s2": s2,
+            "text_embedding": text_embedding,
+            "target_box": target_box,
+            "patch_id": patch_id,
+            "query": str(
+                row["input"]
+            )
+        }
+
+
+# ============================================================
+# COLLATE
+# ============================================================
+
+def collate_fn(batch):
+
+    return {
+        "s1": torch.stack(
+            [
+                x["s1"]
+                for x in batch
+            ]
+        ),
+
+        "s2": torch.stack(
+            [
+                x["s2"]
+                for x in batch
+            ]
+        ),
+
+        "text_embedding": torch.stack(
+            [
+                x["text_embedding"]
+                for x in batch
+            ]
+        ),
+
+        "target_box": torch.stack(
+            [
+                x["target_box"]
+                for x in batch
+            ]
+        ),
+
+        "patch_id": [
+            x["patch_id"]
+            for x in batch
+        ],
+
+        "query": [
+            x["query"]
+            for x in batch
+        ]
+    }
+
+
+# ============================================================
+# CHECKPOINT LOADING
+# ============================================================
+
+print("=" * 80)
+print("CHECKPOINT")
+print("=" * 80)
+
+if not os.path.exists(
+    CHECKPOINT
+):
+
+    raise FileNotFoundError(
+        CHECKPOINT
+    )
+
+checkpoint = torch.load(
+    CHECKPOINT,
+    map_location="cpu",
+    weights_only=False
+)
+
+print(
+    "Checkpoint loaded:",
+    CHECKPOINT
+)
+
+if isinstance(
+    checkpoint,
+    dict
+):
+
+    print(
+        "Checkpoint keys:",
+        list(
+            checkpoint.keys()
+        )
+    )
+
+    if "epoch" in checkpoint:
+
+        print(
+            "Epoch:",
+            checkpoint["epoch"]
+        )
+
+    if "val_iou" in checkpoint:
+
+        print(
+            "Stored val IoU:",
+            checkpoint["val_iou"]
+        )
+
+    if "config" in checkpoint:
+
+        print(
+            "Config:",
+            checkpoint["config"]
+        )
+
+
+# ============================================================
+# MODEL
+# ============================================================
+
+model = GroundingHeatmapModel()
+
+if isinstance(
+    checkpoint,
+    dict
+):
+
+    if "model_state_dict" in checkpoint:
+
+        state_dict = checkpoint[
+            "model_state_dict"
+        ]
+
+    elif "state_dict" in checkpoint:
+
+        state_dict = checkpoint[
+            "state_dict"
+        ]
+
+    else:
+
+        state_dict = checkpoint
+
+else:
+
+    state_dict = checkpoint
+
+
+print()
+print("Loading model weights...")
+
+missing, unexpected = model.load_state_dict(
+    state_dict,
+    strict=False
+)
+
+print(
+    "Missing keys:",
+    len(missing)
+)
+
+print(
+    "Unexpected keys:",
+    len(unexpected)
+)
+
+if missing:
+
+    print()
+    print("MISSING:")
+    for key in missing:
+        print(" ", key)
+
+if unexpected:
+
+    print()
+    print("UNEXPECTED:")
+    for key in unexpected:
+        print(" ", key)
+
+if missing or unexpected:
+
+    raise RuntimeError(
+        "Checkpoint architecture mismatch."
+    )
+
+model.to(
+    DEVICE
+)
+
+model.eval()
+
+print(
+    "\nC1 checkpoint loaded successfully."
+)
+
+
+# ============================================================
+# DATA
+# ============================================================
+
+print()
+print("=" * 80)
+print("VALIDATION DATA")
+print("=" * 80)
+
+if not os.path.exists(
+    VAL_PARQUET
+):
+
+    raise FileNotFoundError(
+        f"Validation parquet not found:\n{VAL_PARQUET}"
+    )
+
+dataset = GroundingDataset(
+    annotation_file=VAL_PARQUET,
+    dofa_dir=DOFA_ROOT,
+    text_cache_dir=TEXT_CACHE_DIR
+)
+
+loader = DataLoader(
+    dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=NUM_WORKERS,
+    collate_fn=collate_fn
+)
+
+print(
+    "Validation batches:",
+    len(loader)
+)
+
+
+# ============================================================
+# DIAGNOSTIC METRICS
+# ============================================================
+
+all_final_ious = []
+all_base_ious = []
+
+all_heatmap_peak_inside = []
+all_heatmap_mass_inside = []
+
+all_corrections = []
+
+target_areas = []
+
+num_examples = 0
+
+
+# ============================================================
+# INFERENCE
+# ============================================================
+
+print()
+print("=" * 80)
+print("RUNNING C1 DIAGNOSTIC")
+print("=" * 80)
+
+with torch.no_grad():
+
+    for batch_idx, batch in enumerate(
+        loader
+    ):
+
+        s1 = batch["s1"].to(
+            DEVICE
+        )
+
+        s2 = batch["s2"].to(
+            DEVICE
+        )
+
+        text = batch[
+            "text_embedding"
+        ].to(
+            DEVICE
+        )
+
+        target = batch[
+            "target_box"
+        ].to(
+            DEVICE
+        )
+
+        outputs = model(
+            s1,
+            s2,
+            text
+        )
+
+        final_box = outputs[
+            "box"
+        ]
+
+        base_box = outputs[
+            "base_box"
+        ]
+
+        heatmap = outputs[
+            "heatmap"
+        ]
+
+        correction = outputs[
+            "correction"
+        ]
+
+        # ----------------------------------------------------
+        # FINAL IOU
+        # ----------------------------------------------------
+
+        final_iou = box_iou(
+            final_box,
+            target
+        )
+
+        base_iou = box_iou(
+            base_box,
+            target
+        )
+
+        all_final_ious.extend(
+            final_iou.cpu().tolist()
+        )
+
+        all_base_ious.extend(
+            base_iou.cpu().tolist()
+        )
+
+        # ----------------------------------------------------
+        # TARGET AREA
+        # ----------------------------------------------------
+
+        areas = (
+            (
+                target[:, 2]
+                -
+                target[:, 0]
+            )
+            *
+            (
+                target[:, 3]
+                -
+                target[:, 1]
+            )
+        )
+
+        target_areas.extend(
+            areas.cpu().tolist()
+        )
+
+        # ----------------------------------------------------
+        # HEATMAP DIAGNOSTICS
+        # ----------------------------------------------------
+
+        B = heatmap.size(0)
+
+        flat_heatmap = heatmap.reshape(
+            B,
+            -1
+        )
+
+        peak_indices = flat_heatmap.argmax(
+            dim=1
+        )
+
+        peak_y = (
+            peak_indices
+            //
+            56
+        )
+
+        peak_x = (
+            peak_indices
+            %
+            56
+        )
+
+        peak_x = (
+            peak_x.float()
+            + 0.5
+        ) / 56.0
+
+        peak_y = (
+            peak_y.float()
+            + 0.5
+        ) / 56.0
+
+        # Is heatmap maximum inside target box?
+
+        inside = (
+            (peak_x >= target[:, 0])
+            &
+            (peak_x <= target[:, 2])
+            &
+            (peak_y >= target[:, 1])
+            &
+            (peak_y <= target[:, 3])
+        )
+
+        all_heatmap_peak_inside.extend(
+            inside.cpu().tolist()
+        )
+
+        # ----------------------------------------------------
+        # HEATMAP MASS INSIDE TARGET
+        # ----------------------------------------------------
+
+        xs = (
+            torch.arange(
+                56,
+                device=DEVICE,
+                dtype=torch.float32
+            )
+            + 0.5
+        ) / 56.0
+
+        ys = (
+            torch.arange(
+                56,
+                device=DEVICE,
+                dtype=torch.float32
+            )
+            + 0.5
+        ) / 56.0
+
+        yy, xx = torch.meshgrid(
+            ys,
+            xs,
+            indexing="ij"
+        )
+
+        xx = xx.unsqueeze(0)
+        yy = yy.unsqueeze(0)
+
+        inside_mask = (
+            (xx >= target[:, 0].view(B, 1, 1))
+            &
+            (xx <= target[:, 2].view(B, 1, 1))
+            &
+            (yy >= target[:, 1].view(B, 1, 1))
+            &
+            (yy <= target[:, 3].view(B, 1, 1))
+        )
+
+        mass_inside = (
+            heatmap
+            *
+            inside_mask.float()
+        ).sum(
+            dim=(1, 2)
+        )
+
+        all_heatmap_mass_inside.extend(
+            mass_inside.cpu().tolist()
+        )
+
+        # ----------------------------------------------------
+        # CORRECTION MAGNITUDE
+        # ----------------------------------------------------
+
+        all_corrections.extend(
+            correction.abs()
+            .mean(dim=1)
+            .cpu()
+            .tolist()
+        )
+
+        num_examples += B
+
+        if (
+            batch_idx + 1
+        ) % 25 == 0:
+
+            print(
+                f"Processed "
+                f"{num_examples:,} / "
+                f"{len(dataset):,}"
+            )
+
+
+# ============================================================
+# FINAL RESULTS
+# ============================================================
+
+final_ious = np.asarray(
+    all_final_ious,
+    dtype=np.float64
+)
+
+base_ious = np.asarray(
+    all_base_ious,
+    dtype=np.float64
+)
+
+peak_inside = np.asarray(
+    all_heatmap_peak_inside,
+    dtype=np.float64
+)
+
+mass_inside = np.asarray(
+    all_heatmap_mass_inside,
+    dtype=np.float64
+)
+
+corrections = np.asarray(
+    all_corrections,
+    dtype=np.float64
+)
+
+target_areas = np.asarray(
+    target_areas,
+    dtype=np.float64
+)
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+print()
+print("=" * 80)
+print("C1 DIAGNOSTIC RESULTS")
+print("=" * 80)
+
+print()
+print(
+    f"Examples:                 {len(final_ious):,}"
+)
+
+print(
+    f"Final mean IoU:           {final_ious.mean():.6f}"
+)
+
+print(
+    f"Final median IoU:         {np.median(final_ious):.6f}"
+)
+
+print(
+    f"Final IoU >= 0.25:        "
+    f"{(final_ious >= 0.25).mean() * 100:.2f}%"
+)
+
+print(
+    f"Final IoU >= 0.50:        "
+    f"{(final_ious >= 0.50).mean() * 100:.2f}%"
+)
+
+print(
+    f"Final IoU >= 0.75:        "
+    f"{(final_ious >= 0.75).mean() * 100:.2f}%"
+)
+
+print()
+print(
+    f"Base-box mean IoU:        {base_ious.mean():.6f}"
+)
+
+print(
+    f"Base-box median IoU:      {np.median(base_ious):.6f}"
+)
+
+print(
+    f"Base IoU >= 0.25:         "
+    f"{(base_ious >= 0.25).mean() * 100:.2f}%"
+)
+
+print(
+    f"Base IoU >= 0.50:         "
+    f"{(base_ious >= 0.50).mean() * 100:.2f}%"
+)
+
+print()
+print(
+    f"Heatmap peak inside GT:   "
+    f"{peak_inside.mean() * 100:.2f}%"
+)
+
+print(
+    f"Mean heatmap mass inside: "
+    f"{mass_inside.mean():.6f}"
+)
+
+print(
+    f"Median heatmap mass:      "
+    f"{np.median(mass_inside):.6f}"
+)
+
+print()
+print(
+    f"Mean correction magnitude:"
+    f" {corrections.mean():.6f}"
+)
+
+print(
+    f"Median correction magnitude:"
+    f" {np.median(corrections):.6f}"
+)
+
+print()
+print(
+    f"Mean target area:          "
+    f"{target_areas.mean():.6f}"
+)
+
+print(
+    f"Median target area:        "
+    f"{np.median(target_areas):.6f}"
+)
+
+
+# ============================================================
+# RELATIONSHIP: BASE -> FINAL
+# ============================================================
+
+improved = (
+    final_ious
+    >
+    base_ious
+)
+
+worsened = (
+    final_ious
+    <
+    base_ious
+)
+
+same = (
+    np.isclose(
+        final_ious,
+        base_ious,
+        atol=1e-8
+    )
+)
+
+print()
+print("=" * 80)
+print("BOX CORRECTION EFFECT")
+print("=" * 80)
+
+print(
+    f"Improved by correction:   "
+    f"{improved.mean() * 100:.2f}%"
+)
+
+print(
+    f"Worsened by correction:   "
+    f"{worsened.mean() * 100:.2f}%"
+)
+
+print(
+    f"Essentially unchanged:    "
+    f"{same.mean() * 100:.2f}%"
+)
+
+print(
+    f"Mean IoU change:           "
+    f"{(final_ious - base_ious).mean():+.6f}"
+)
+
+
+# ============================================================
+# SIZE BINS
+# ============================================================
+
+print()
+print("=" * 80)
+print("IOU BY TARGET SIZE")
+print("=" * 80)
+
+bins = [
+    (0.0, 0.03),
+    (0.03, 0.0672),
+    (0.0672, 0.196),
+    (0.196, 0.4148),
+    (0.4148, 0.62),
+    (0.62, 1.0)
+]
+
+for low, high in bins:
+
+    mask = (
+        (target_areas >= low)
+        &
+        (target_areas < high)
+    )
+
+    if mask.sum() == 0:
+        continue
+
+    print(
+        f"{low:.4f} - {high:.4f}: "
+        f"n={mask.sum():4d} | "
+        f"base={base_ious[mask].mean():.6f} | "
+        f"final={final_ious[mask].mean():.6f}"
+    )
+
+
+# ============================================================
+# SAVE RESULTS
+# ============================================================
+
+output_dir = (
+    r"D:\SatQueryAI\data\processed"
+    r"\c1_diagnostic"
+)
+
+os.makedirs(
+    output_dir,
+    exist_ok=True
+)
+
+summary = {
+
+    "num_examples": int(
+        len(final_ious)
+    ),
+
+    "final_mean_iou": float(
+        final_ious.mean()
+    ),
+
+    "final_median_iou": float(
+        np.median(final_ious)
+    ),
+
+    "final_iou_25": float(
+        (final_ious >= 0.25).mean()
+    ),
+
+    "final_iou_50": float(
+        (final_ious >= 0.50).mean()
+    ),
+
+    "final_iou_75": float(
+        (final_ious >= 0.75).mean()
+    ),
+
+    "base_mean_iou": float(
+        base_ious.mean()
+    ),
+
+    "base_median_iou": float(
+        np.median(base_ious)
+    ),
+
+    "base_iou_25": float(
+        (base_ious >= 0.25).mean()
+    ),
+
+    "base_iou_50": float(
+        (base_ious >= 0.50).mean()
+    ),
+
+    "heatmap_peak_inside": float(
+        peak_inside.mean()
+    ),
+
+    "heatmap_mass_inside_mean": float(
+        mass_inside.mean()
+    ),
+
+    "heatmap_mass_inside_median": float(
+        np.median(mass_inside)
+    ),
+
+    "mean_correction_magnitude": float(
+        corrections.mean()
+    ),
+
+    "median_correction_magnitude": float(
+        np.median(corrections)
+    ),
+
+    "mean_target_area": float(
+        target_areas.mean()
+    ),
+
+    "median_target_area": float(
+        np.median(target_areas)
+    ),
+
+    "mean_iou_change_from_correction": float(
+        (final_ious - base_ious).mean()
+    )
+}
+
+summary_path = os.path.join(
+    output_dir,
+    "summary.json"
+)
+
+with open(
+    summary_path,
+    "w"
+) as f:
+
+    json.dump(
+        summary,
+        f,
+        indent=2
+    )
+
+
+# ============================================================
+# PER-SAMPLE CSV
+# ============================================================
+
+csv_path = os.path.join(
+    output_dir,
+    "per_sample.csv"
+)
+
+result_df = pd.DataFrame(
+    {
+        "final_iou": final_ious,
+        "base_iou": base_ious,
+        "iou_change": (
+            final_ious
+            -
+            base_ious
+        ),
+        "heatmap_peak_inside": (
+            peak_inside
+            >
+            0.5
+        ),
+        "heatmap_mass_inside": mass_inside,
+        "correction_magnitude": corrections,
+        "target_area": target_areas
+    }
+)
+
+result_df.to_csv(
+    csv_path,
+    index=False
+)
+
+
+# ============================================================
+# DONE
+# ============================================================
+
+print()
+print("=" * 80)
+print("DIAGNOSTIC COMPLETE")
+print("=" * 80)
+
+print(
+    "Summary:",
+    summary_path
+)
+
+print(
+    "Per-sample:",
+    csv_path
+)
+
+print()
+print("No model weights were modified.")
+

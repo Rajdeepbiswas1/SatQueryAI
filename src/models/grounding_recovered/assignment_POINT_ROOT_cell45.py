@@ -1,0 +1,3 @@
+POINT_ROOT = Path(
+    "/kaggle/input/datasets/rajdeepbiswas1/satqueryai-point-grounding"
+)

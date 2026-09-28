@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets / local configuration
+.auth_secret
+*.secret
+.env
+.env.*
+!.env.example
+
+# Python tooling / local metadata
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Backup / historical files
+*.bak
+*.bak_*
+*_backup/
+_backup/
+_incoming/
+archive/
+
+# Local audit/package artifacts
+auth-cookies.txt
+kaggle_full_inventory.txt
+kaggle_temporal_package.zip
+
+# Local Kaggle training bundles
+training/single_modality/kaggle_bundle/
+training/single_modality/kaggle_bundle_manifest/
+
+# Kaggle workspaces / downloaded datasets / generated bundles
+kaggle/
+kaggle_downloads/
+kaggle_grounding_embeddings/
+kaggle_mcq_input/
+kaggle_temporal/
+kaggle_temporal_dataset/
+kaggle_temporal_package/
+kaggle_temporal_v2_bundle/
+kaggle_uploads/
+
+# Large/raw datasets and generated data
+data/
+outputs/
+
+# Model checkpoints / generated model artifacts
+models/checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+
+# Historical backup directories
+agent/backups/
+training/backups/
+
+# Specific generated artifacts
+grounding_text_embedding_shards/
+mcq_question_cache_package/
+
+# Notebook-generated local artifacts
+.ipynb_checkpoints/

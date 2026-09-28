@@ -1,0 +1,85 @@
+{
+  "notebook": "D:\\SatQueryAI\\kaggle_downloads\\notebooke1eb76f0a0.ipynb",
+  "selected_classes": {
+    "UnifiedGroundingModel": {
+      "cell": 59,
+      "source_line": 250
+    },
+    "UnifiedGroundingInference": {
+      "cell": 66,
+      "source_line": 1083
+    },
+    "SatQueryAIGroundingRouter": {
+      "cell": 66,
+      "source_line": 1381
+    }
+  },
+  "selected_helpers": {
+    "_extract_evidence": {
+      "cell": 66,
+      "source_line": 962
+    },
+    "_find_named_tensor": {
+      "cell": 66,
+      "source_line": 747
+    },
+    "_heatmap_moment_box_generic": {
+      "cell": 66,
+      "source_line": 825
+    },
+    "_move_to_model_device": {
+      "cell": 60,
+      "source_line": 43
+    },
+    "_normalize_heatmap": {
+      "cell": 66,
+      "source_line": 765
+    },
+    "_prepare_point": {
+      "cell": 66,
+      "source_line": 698
+    },
+    "_prepare_s1_s2": {
+      "cell": 66,
+      "source_line": 613
+    },
+    "_prepare_text": {
+      "cell": 66,
+      "source_line": 659
+    },
+    "_sanitize_bbox": {
+      "cell": 66,
+      "source_line": 922
+    },
+    "_to_batched": {
+      "cell": 60,
+      "source_line": 30
+    }
+  },
+  "required_helpers": [
+    "_extract_evidence",
+    "_find_named_tensor",
+    "_heatmap_moment_box_generic",
+    "_move_to_model_device",
+    "_normalize_heatmap",
+    "_prepare_point",
+    "_prepare_s1_s2",
+    "_prepare_text",
+    "_sanitize_bbox",
+    "_to_batched"
+  ],
+  "selected_imports": [],
+  "future_imports": [],
+  "output": "D:\\SatQueryAI\\src\\models\\grounding_recovered\\unified_grounding_recovered.py",
+  "excluded": [
+    "notebook assignments",
+    "dataset construction",
+    "DataLoaders",
+    "training code",
+    "checkpoint loading",
+    "evaluation objects",
+    "temporary notebook state",
+    "model instances",
+    "Kaggle runtime state"
+  ]
+}

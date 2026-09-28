@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Sign in to SatQueryAI.">
+    <title>SatQueryAI — Sign in</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="login.css">
+</head>
+<body>
+<div class="login-shell">
+    <div class="login-grid"></div>
+    <div class="login-glow glow-a"></div>
+    <div class="login-glow glow-b"></div>
+
+    <header class="login-topbar">
+        <a class="brand" href="getstarted.html" aria-label="Back to SatQueryAI overview">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="24" cy="24" r="17" stroke="currentColor" stroke-width="1.6"/>
+                    <ellipse cx="24" cy="24" rx="22" ry="8" transform="rotate(-24 24 24)" stroke="currentColor" stroke-width="1.2" opacity=".65"/>
+                    <circle cx="24" cy="24" r="4" fill="currentColor"/>
+                    <circle cx="39" cy="15" r="2" fill="currentColor"/>
+                </svg>
+            </span>
+            <span class="brand-copy">
+                <span class="brand-name">SatQuery<span>AI</span></span>
+                <span class="brand-subtitle">Earth Observation Intelligence</span>
+            </span>
+        </a>
+        <a class="back-link" href="getstarted.html">← Overview</a>
+    </header>
+
+    <main class="login-main">
+        <section class="login-visual">
+            <div class="visual-kicker"><span></span> SECURE WORKSPACE</div>
+            <h1>Enter the<br><em>observation layer.</em></h1>
+            <p>Sign in to move from satellite imagery to agentic Earth observation analysis.</p>
+
+            <div class="mini-orbit">
+                <div class="mini-ring ring-a"></div>
+                <div class="mini-ring ring-b"></div>
+                <div class="mini-ring ring-c"></div>
+                <div class="mini-core"><div></div></div>
+                <span class="mini-dot dot-a"></span>
+                <span class="mini-dot dot-b"></span>
+                <span class="mini-dot dot-c"></span>
+            </div>
+
+            <div class="security-note">
+                <span class="security-icon">✓</span>
+                <div>
+                    <strong>Protected analysis access</strong>
+                    <span>Your session authorizes the analysis and imagery services.</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="login-card-wrap">
+            <div class="login-card">
+                <div class="card-kicker">SATQUERYAI ACCESS</div>
+                <h2>Welcome back.</h2>
+                <p class="card-subtitle">Sign in to continue to your analysis workspace.</p>
+
+                <form id="login-form" novalidate>
+                    <label for="username">Username</label>
+                    <div class="field">
+                        <span class="field-icon">◌</span>
+                        <input id="username" name="username" type="text" autocomplete="username" placeholder="Enter username" required>
+                    </div>
+
+                    <label for="password">Password</label>
+                    <div class="field">
+                        <span class="field-icon">⌁</span>
+                        <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
+                        <button class="show-password" id="toggle-password" type="button" aria-label="Show password">Show</button>
+                    </div>
+
+                    <div class="form-status" id="form-status" role="alert" aria-live="polite"></div>
+
+                    <button class="submit-button" type="submit" id="login-button">
+                        <span id="login-button-text">Sign in</span>
+                        <span class="submit-arrow">→</span>
+                    </button>
+                </form>
+
+                <div class="login-footnote">
+                    <span class="tiny-dot"></span>
+                    Local SatQueryAI authentication
+                </div>
+            </div>
+        </section>
+    </main>
+</div>
+<script src="login.js"></script>
+</body>
+</html>

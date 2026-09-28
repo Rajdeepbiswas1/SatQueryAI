@@ -1,0 +1,29 @@
+Comparing files D:\SATQUERYAI\KAGGLE_TEMPORAL_V2_BUNDLE\TRAINING\train_temporal_kaggle_v2_balanced.py and D:\SATQUERYAI\TRAINING\TRAIN_TEMPORAL_KAGGLE_V2_BALANCED.PY
+***** D:\SATQUERYAI\KAGGLE_TEMPORAL_V2_BUNDLE\TRAINING\train_temporal_kaggle_v2_balanced.py
+  363:              question_ids = data.get("question_ids")
+  364:              question_embeddings = data.get("question_embeddings")
+  365:  
+***** D:\SATQUERYAI\TRAINING\TRAIN_TEMPORAL_KAGGLE_V2_BALANCED.PY
+  363:              question_ids = data.get("question_ids")
+  364:              if question_ids is None:
+  365:                  question_ids = data.get("ids")
+  366:  
+  367:              question_embeddings = data.get("question_embeddings")
+  368:              if question_embeddings is None:
+  369:                  question_embeddings = data.get("embeddings")
+  370:  
+*****
+
+***** D:\SATQUERYAI\KAGGLE_TEMPORAL_V2_BUNDLE\TRAINING\train_temporal_kaggle_v2_balanced.py
+  367:                  raise RuntimeError(
+  368:                      f"{path}: expected keys question_ids, "
+  369:                      f"question_embeddings. "
+  370:                      f"Found: {sorted(data.keys())}"
+***** D:\SATQUERYAI\TRAINING\TRAIN_TEMPORAL_KAGGLE_V2_BALANCED.PY
+  372:                  raise RuntimeError(
+  373:                      f"{path}: expected an ID key "
+  374:                      f"(question_ids or ids) and an embedding key "
+  375:                      f"(question_embeddings or embeddings). "
+  376:                      f"Found: {sorted(data.keys())}"
+*****
+
